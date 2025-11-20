@@ -12,12 +12,12 @@ Behavior summary (decisions enforced):
     <Artist> - (<Year>) <Album Title> [<Release Type>]
   Release Type is included only when a release-type tag is present and not 'LP'.
 
-- Track filename format (always includes disc number in parentheses):
-    (<disc>)<track_num_padded>. <Artist> - <Title>.m4a
+- Track filename format:
+    <disc/total_discs> <track_num_padded>. <Artist> - <Title>.m4a
   If the album is multi-disc, files are placed under a disc subdirectory named
   by the disc number (e.g. .../Album/1/(1)01. Artist - Song.m4a).
   If single-disc, files remain inside the album directory with the same naming
-  rule (disc number will be 1).
+  rule.
 
 - SKIP_EXISTING (env var, default 'yes') controls whether already-existing
   target filenames are preserved. If SKIP_EXISTING=yes and the desired
@@ -37,16 +37,16 @@ Notes:
 """
 
 from __future__ import annotations
+
 import argparse
+import logging
 import os
+import re
 import shutil
 import sys
-from pathlib import Path
-import logging
-import re
-import unicodedata
 import typing as t
-import os
+import unicodedata
+from pathlib import Path
 
 from mutagen import File as MutagenFile
 
@@ -353,12 +353,12 @@ def process_album(album_path: Path, dest_root: Path, dry_run: bool = False):
     # For multi-disc: create per-disc subdir
     for p, (disc, track, tags) in disc_map.items():
         track_num = padded(track, 2)
-        # Always include disc number in parentheses prefix per user's last instruction
-        filename = f"({disc}){track_num}. {tags.get('artist') or artist} - {tags.get('title') or p.stem}{p.suffix}"
+        filename = f"{track_num}. {tags.get('artist') or artist} - {tags.get('title') or p.stem}{p.suffix}"
         # sanitize filename
         filename = sanitize_filename(filename)
         if multi_disc:
-            target_dir = renamed_album_dir / str(disc)
+            filename = f"{disc}/{discs_present} {filename}"
+            target_dir = f"{renamed_album_dir}/Disc {disc}"
         else:
             target_dir = renamed_album_dir
         target_path = target_dir / filename
