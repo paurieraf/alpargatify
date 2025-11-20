@@ -139,11 +139,19 @@ echo
 # Find and convert .flac files
 find "$SRC" -type f -iname '*.flac' -print0 |
 while IFS= read -r -d '' srcfile; do
-  relpath="${srcfile#$SRC/}"
+  if [[ "$srcfile" == "$SRC/"* ]]; then
+    relpath="${srcfile:$(( ${#SRC} + 1 ))}"
+  else
+    relpath="$srcfile"
+  fi
   dirpart="$(dirname "$relpath")"
   base="$(basename "$relpath")"
   name="${base%.*}"
-  destdir="$DEST/$dirpart"
+  if [ "$dirpart" = "." ]; then
+    destdir="$DEST"
+  else
+    destdir="$DEST/$dirpart"
+  fi
   mkdir -p "$destdir" || { echo "Warning: could not create $destdir" >&2; continue; }
   destfile="$destdir/$name.m4a"
 
