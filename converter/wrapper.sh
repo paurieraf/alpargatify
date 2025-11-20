@@ -127,10 +127,16 @@ if [ ! -f "$COMPOSE_FILE" ]; then
 fi
 
 # Export env vars used by docker-compose
+# DEST is absolute path to the album dir you want normalized
 export DEST_PATH="$DEST"
-export BEETS_CONFIG="$BEETS_CONFIG"
+# PARENT_OF_DEST_PATH = absolute parent directory (host path to bind)
+export PARENT_OF_DEST_PATH="$(cd "$(dirname "$DEST")" && pwd)"
+# DEST_SUBPATH = basename of DEST (the child directory inside parent that will be renamed/operated)
+export DEST_SUBPATH="$(basename "$DEST")"
 # Pass DRY_RUN to normalizer container
 export DRY_RUN="$DRY_RUN"
+
+export BEETS_CONFIG="$BEETS_CONFIG"
 
 echo "-> STEP 2 & 3: invoking docker compose (beets -> normalizer)"
 pushd "$SCRIPT_DIR/docker" >/dev/null

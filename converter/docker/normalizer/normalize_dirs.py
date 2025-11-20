@@ -1,236 +1,422 @@
 #!/usr/bin/env python3
-# normalize_dirs.py
-# Usage:
-#   python3 normalize_dirs.py --source /path/to/aac --dest /path/to/aac
-#   python3 normalize_dirs.py --dry-run --source src --dest dest
+"""normalize_dirs.py
 
+Scan DEST tree for album directories (a directory containing audio files),
+normalize album directory names and track filenames.
+
+Usage (entrypoint passes these args):
+  python3 normalize_dirs.py --source /data/Some/Path --dest /data/Some/Path [--dry-run]
+
+Behavior summary (decisions enforced):
+- Album directory name format:
+    <Artist> - (<Year>) <Album Title> [<Release Type>]
+  Release Type is included only when a release-type tag is present and not 'LP'.
+
+- Track filename format (always includes disc number in parentheses):
+    (<disc>)<track_num_padded>. <Artist> - <Title>.m4a
+  If the album is multi-disc, files are placed under a disc subdirectory named
+  by the disc number (e.g. .../Album/1/(1)01. Artist - Song.m4a).
+  If single-disc, files remain inside the album directory with the same naming
+  rule (disc number will be 1).
+
+- SKIP_EXISTING (env var, default 'yes') controls whether already-existing
+  target filenames are preserved. If SKIP_EXISTING=yes and the desired
+  pathname already exists, the file is left alone (skipped). If SKIP_EXISTING=no
+  the existing file will be overwritten (by moving/renaming the source into
+  place, replacing the previous file).
+
+- The script is careful: it will not merge two different album directories by
+  renaming if a conflicting directory name already exists. It logs actions and
+  supports --dry-run to preview changes.
+
+Notes:
+- The script uses mutagen to read tags (mutagen is already installed in the
+  image). It supports common audio container types.
+- The heuristics to read tags try common tag keys across formats.
+
+"""
+
+from __future__ import annotations
 import argparse
 import os
 import shutil
-from mutagen.mp4 import MP4
-from collections import defaultdict
+import sys
+from pathlib import Path
+import logging
 import re
+import unicodedata
+import typing as t
+import os
 
-def safe(s):
-    if s is None:
-        return ""
-    # collapse whitespace, remove leading/trailing
-    s = str(s).strip()
-    # replace problematic filesystem characters
-    s = re.sub(r'[\/\:\*\?\"<>\|]', '_', s)
-    return s
+from mutagen import File as MutagenFile
 
-def detect_release_type(tags):
-    # tries several tags to derive type: 'album', 'single', 'ep', 'compilation', 'archive', 'live', ...
-    # many tag namespaces exist; we check common keys
-    candidates = []
-    for k in ('albumtype', 'releasegroup_type', 'type', 'media'):
-        if k in tags:
-            candidates.append(safe(tags[k]))
-    # Mutagen MP4 uses keys like '\xa9alb' for album; extra tags may be in '----:com.apple.itunes:...'
-    # Look for 'compilation' flag
-    if 'cpil' in tags:
-        try:
-            if tags['cpil'][0]:
-                candidates.append('compilation')
-        except Exception:
-            pass
-    # fallback: if total tracks small maybe single/EP (we avoid guessing too much)
-    if candidates:
-        return candidates[0].lower()
-    return "album"
+AUDIO_EXTS = {'.m4a', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.opus'}
 
-def get_tag_mp4(mp4, key):
-    # common MP4 keys mapping
-    mapping = {
-        'artist': '\xa9ART', 'album': '\xa9alb', 'title': '\xa9nam', 'date': '\xa9day',
-        'tracknumber': 'trkn', 'discnumber': 'disk', 'albumartist': 'aART', 'genre': '\xa9gen'
-    }
-    if key in mapping:
-        k = mapping[key]
-        if k in mp4:
-            return mp4[k]
-    # fallback: try plain key
-    if key in mp4:
-        return mp4[key]
-    return None
+# Environment-controlled behavior
+SKIP_EXISTING = os.environ.get('SKIP_EXISTING', 'yes').lower()
 
-def gather_album_info(filepaths):
-    albums = defaultdict(list)
-    for fp in filepaths:
-        try:
-            audio = MP4(fp)
-        except Exception:
-            audio = None
-        if audio is None:
-            continue
-        # prefer albumartist then artist
-        albumartist = get_tag_mp4(audio, 'albumartist') or get_tag_mp4(audio, 'artist') or ['Unknown Artist']
-        # MP4 tags can be list
-        if isinstance(albumartist, (list, tuple)):
-            albumartist = albumartist[0] if albumartist else "Unknown Artist"
-        album = get_tag_mp4(audio, 'album') or ['Unknown Album']
-        if isinstance(album, (list, tuple)):
-            album = album[0] if album else "Unknown Album"
-        # identify album key
-        key = (safe(albumartist), safe(album))
-        albums[key].append((fp, audio))
+# Helpers
+logger = logging.getLogger('normalize')
+
+
+def is_audio_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in AUDIO_EXTS
+
+
+def find_album_dirs(root: Path) -> t.List[Path]:
+    """Return list of directories that contain at least one audio file.
+
+    This returns directories anywhere under root (including root itself) that
+    contain audio files directly (i.e. not only via subdirectories)."""
+    albums = []
+    for dirpath, _, filenames in os.walk(root):
+        p = Path(dirpath)
+        for fn in filenames:
+            if Path(fn).suffix.lower() in AUDIO_EXTS:
+                albums.append(p)
+                break
     return albums
 
-def build_target_for_album(artist, album, audio_files):
-    # determine year: try to read date/year from first track
-    year = None
-    albumtype = None
-    for fp, audio in audio_files:
-        # date
-        v = get_tag_mp4(audio, 'date') or get_tag_mp4(audio, 'year')
-        if v:
-            if isinstance(v, (list, tuple)):
-                v = v[0]
-            if isinstance(v, str):
-                m = re.search(r'\d{4}', v)
-                if m:
-                    year = m.group(0)
-                    break
-            else:
-                year = str(v)
-                break
-    if year is None:
-        year = "????"
-    # album type heuristic
+
+def safe_text(val: t.Any) -> str:
+    if val is None:
+        return ''
+    if isinstance(val, (list, tuple)):
+        val = val[0] if val else ''
+    return str(val).strip()
+
+
+def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
+    """Try a few tag keys from mutagen tags, return the first non-empty.
+
+    Keys should be the convenient canonical names we want to probe for.
+    This function attempts several common tag variants for different formats.
+    """
+    if mut is None:
+        return None
+    tags = mut.tags
+    if not tags:
+        return None
+
+    # For MP4 files mutagen uses keys like '\xa9nam', '\xa9ART', '\xa9day'
+    # For ID3 tags keys are objects (FrameName) - but tags.get('TPE1') works.
+    # Mutagen also supports tags.get('artist') for some formats.
+
+    # Try canonical keys first
+    for k in keys:
+        # direct key
+        if k in tags:
+            return safe_text(tags.get(k))
+        # try lowercase
+        if k.lower() in tags:
+            return safe_text(tags.get(k.lower()))
+    # try a more general search: look for keys that contain the canonical key
+    for k in keys:
+        for tkey in tags.keys():
+            try:
+                if isinstance(tkey, str) and k.lower() in tkey.lower():
+                    v = tags.get(tkey)
+                    if v:
+                        return safe_text(v)
+            except Exception:
+                continue
+    return None
+
+
+def read_tags(path: Path) -> dict:
+    """Return a dict with common tag fields for this file.
+
+    Fields returned: artist, albumartist, album, title, year, disc, track, release_type
+    """
+    data = {
+        'artist': None,
+        'albumartist': None,
+        'album': None,
+        'title': None,
+        'year': None,
+        'disc': None,
+        'track': None,
+        'release_type': None,
+    }
     try:
-        albumtype = detect_release_type(audio_files[0][1])
-    except Exception:
-        albumtype = "album"
-    albumtype = albumtype or "album"
-    # if albumtype indicates standard album/LP, do not show bracket
-    bracket=""
-    if albumtype not in ('album', 'lp', 'longplay'):
-        bracket = f" [{albumtype}]"
-    dirname = f"{artist} - ({year}) {album}{bracket}"
-    # detect discs structure
-    discs = {}
-    for fp, audio in audio_files:
-        disc = None
-        track = None
-        # check trkn and disk tags
-        if 'trkn' in audio:
-            trkn = audio.get('trkn')
-            if trkn and isinstance(trkn[0], tuple):
-                track = trkn[0][0]
-                # track total = trkn[0][1]
-        if 'disk' in audio:
-            dk = audio.get('disk')
-            if dk and isinstance(dk[0], tuple):
-                disc = dk[0][0]
-        # fallback to custom tags
-        if disc is None:
-            disc = 1
-        if track is None:
-            # fallback to filename ordering
-            basename = os.path.basename(fp)
-            m = re.match(r'(\d{1,2})', basename)
-            track = int(m.group(1)) if m else 0
-        discs.setdefault(disc, []).append((track, fp, audio))
-    # sort tracks within discs
-    for k in discs:
-        discs[k].sort(key=lambda x: x[0])
-    return dirname, discs
+        m = MutagenFile(str(path), easy=False)
+        if m is None:
+            return data
+        # Common lookups
+        # artist
+        artist = get_tag_value(m, ['artist', '©ART', '©ARTIST', 'TPE1', 'artist'])
+        albumartist = get_tag_value(m, ['albumartist', 'aART', '©ART', 'albumartist'])
+        album = get_tag_value(m, ['album', '\u00a9alb', '©alb', 'TALB', 'album'])
+        title = get_tag_value(m, ['title', '\u00a9nam', '©nam', 'TIT2', 'title'])
+        year = get_tag_value(m, ['date', 'year', '\u00a9day', '©day', 'TDRC'])
+        # disc and track can be stored as "1/2" or as numbers
+        disc = get_tag_value(m, ['disc', 'disk', 'disknumber', 'disk number', 'discnumber'])
+        track = get_tag_value(m, ['track', 'tracknumber', 'trkn', 'TRCK'])
+        release_type = get_tag_value(m, ['release_type', 'albumtype', 'media', 'stik', 'cpil'])
 
-def main():
-    p = argparse.ArgumentParser(description="Normalize audio directory structure using tags (MP4/M4A)")
-    p.add_argument('--source', required=True, help='source directory with audio files')
-    p.add_argument('--dest', required=True, help='destination root for normalized layout (can equal source)')
-    p.add_argument('--dry-run', action='store_true', help='do not move anything, just print actions')
-    args = p.parse_args()
+        # Normalize
+        data['artist'] = safe_text(artist) or safe_text(albumartist) or None
+        data['albumartist'] = safe_text(albumartist) or safe_text(artist) or None
+        data['album'] = safe_text(album) or None
+        data['title'] = safe_text(title) or None
+        data['year'] = None
+        if year:
+            # try to extract 4-digit year from string
+            myear = re.search(r"(19|20)\d{2}", year)
+            if myear:
+                data['year'] = myear.group(0)
+            else:
+                data['year'] = year
+        # disc
+        if disc:
+            mdisc = re.search(r"(\d+)", disc)
+            if mdisc:
+                data['disc'] = int(mdisc.group(1))
+        # track
+        if track:
+            mtrack = re.search(r"(\d+)", track)
+            if mtrack:
+                data['track'] = int(mtrack.group(1))
+        data['release_type'] = safe_text(release_type) or None
+    except Exception as e:
+        logger.debug(f"Failed reading tags for {path}: {e}")
+    return data
 
-    # gather list of m4a/mp4 files under source
-    files = []
-    for root, _, fnames in os.walk(args.source):
-        for f in fnames:
-            if f.lower().endswith(('.m4a', '.mp4', '.m4b')):
-                files.append(os.path.join(root, f))
 
+def padded(n: int, width: int = 2) -> str:
+    return str(n).zfill(width)
+
+
+def build_album_dir_name(artist: str, year: t.Optional[str], album: str, release_type: t.Optional[str]) -> str:
+    """Construct album dir name: <Artist> - (<Year>) <Album Title> [<Release Type>]
+
+    Release type is only included when present and not equal to 'LP' (case-insensitive).
+    """
+    parts = []
+    base_artist = artist or 'Unknown Artist'
+    base_album = album or 'Unknown Album'
+    parts.append(f"{base_artist} - ")
+    if year:
+        parts.append(f"({year}) ")
+    parts.append(base_album)
+    if release_type:
+        if release_type.strip().lower() not in ('lp', 'long play'):
+            parts.append(f" [{release_type}]")
+    return ''.join(parts)
+
+
+def make_unique_path_if_needed(path: Path) -> Path:
+    """If path exists, try to make a unique name by appending ' (1)', ' (2)', ...
+
+    This is used only for safety when we need a non-conflicting name.
+    """
+    if not path.exists():
+        return path
+    parent = path.parent
+    stem = path.stem
+    suffix = path.suffix
+    i = 1
+    while True:
+        candidate = parent / f"{stem} ({i}){suffix}"
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+def ensure_dir(path: Path, dry_run: bool = False):
+    if dry_run:
+        logger.info(f"DRY RUN: would create directory: {path}")
+        return
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def move_or_rename(src: Path, dst: Path, dry_run: bool = False):
+    """Move src to dst with overwrite control via SKIP_EXISTING.
+
+    Returns True if moved, False if skipped.
+    """
+    if src.resolve() == dst.resolve():
+        logger.debug(f"Source and destination are same: {src}")
+        return False
+
+    if dst.exists():
+        if SKIP_EXISTING == 'yes':
+            logger.info(f"Skipping existing target: {dst}")
+            return False
+        else:
+            # overwrite
+            if dry_run:
+                logger.info(f"DRY RUN: would overwrite existing {dst} with {src}")
+            else:
+                if dst.is_file():
+                    dst.unlink()
+                else:
+                    # if it's a directory, fail-safe
+                    raise FileExistsError(f"Destination exists and is a directory: {dst}")
+    if dry_run:
+        logger.info(f"DRY RUN: would move '{src}' -> '{dst}'")
+        return True
+    ensure_dir(dst.parent, dry_run=False)
+    shutil.move(str(src), str(dst))
+    logger.info(f"Moved '{src}' -> '{dst}'")
+    return True
+
+
+def process_album(album_path: Path, dest_root: Path, dry_run: bool = False):
+    logger.info(f"Processing album dir: {album_path}")
+    # Gather audio files directly under album_path and in immediate subdirs (ignore nested albums)
+    files = [p for p in album_path.iterdir() if is_audio_file(p)]
+    # Also include audio files in immediate subdirs (commonly disc subdirs)
+    for child in album_path.iterdir():
+        if child.is_dir():
+            for p in child.iterdir():
+                if is_audio_file(p):
+                    files.append(p)
     if not files:
-        print("No m4a/mp4 files found under", args.source)
+        logger.debug(f"No audio files found in {album_path}")
         return
 
-    albums = gather_album_info(files)
-    print(f"Found {len(albums)} album(s)")
+    tag_samples = [read_tags(p) for p in files]
+    # Determine album-level metadata by majority / fallbacks
+    artist = None
+    album = None
+    year = None
+    release_type = None
+    discs = set()
 
-    for (artist, album), items in albums.items():
-        print(f"\nProcessing album: Artist='{artist}' Album='{album}' ({len(items)} tracks)")
-        dirname, discs = build_target_for_album(artist, album, items)
-
-        artist_dir = os.path.join(args.dest, artist)
-        album_dir = os.path.join(artist_dir, dirname)
-
-        # create album dir
-        print(" -> Target album dir:", album_dir)
-        if not args.dry_run:
-            os.makedirs(album_dir, exist_ok=True)
-
-        # if multiple discs, create CD1, CD2...
-        if len(discs) > 1:
-            for discno in sorted(discs.keys()):
-                disc_label = f"CD{discno}"
-                disc_path = os.path.join(album_dir, disc_label)
-                if not args.dry_run:
-                    os.makedirs(disc_path, exist_ok=True)
-                for idx, (tracknum, fp, audio) in enumerate(discs[discno], start=1):
-                    # create filename: NN. Title.m4a (optionally "Artist - title" if desired)
-                    title = get_tag_mp4(audio, 'title') or os.path.splitext(os.path.basename(fp))[0]
-                    if isinstance(title, (list,tuple)): title = title[0]
-                    title = safe(title)
-                    tracknum_s = f"{int(tracknum):02d}" if tracknum else f"{idx:02d}"
-                    newname = f"{tracknum_s}. {title}.m4a"
-                    destpath = os.path.join(disc_path, newname)
-                    print(f"   move: {fp} -> {destpath}")
-                    if not args.dry_run:
-                        # avoid overwriting existing files accidentally
-                        if os.path.exists(destpath):
-                            print("     exists, appending suffix")
-                            base, ext = os.path.splitext(newname)
-                            i = 1
-                            while True:
-                                candidate = os.path.join(disc_path, f"{base} ({i}){ext}")
-                                if not os.path.exists(candidate):
-                                    destpath = candidate
-                                    break
-                                i += 1
-                        shutil.move(fp, destpath)
+    for t in tag_samples:
+        if not artist and t.get('albumartist'):
+            artist = t.get('albumartist')
+        if not artist and t.get('artist'):
+            artist = t.get('artist')
+        if not album and t.get('album'):
+            album = t.get('album')
+        if not year and t.get('year'):
+            year = t.get('year')
+        if not release_type and t.get('release_type'):
+            release_type = t.get('release_type')
+        if t.get('disc'):
+            discs.add(int(t.get('disc')))
         else:
-            # single-disc album - place tracks in album_dir directly
-            for idx, (tracknum, fp, audio) in enumerate(next(iter(discs.values())), start=1):
-                title = get_tag_mp4(audio, 'title') or os.path.splitext(os.path.basename(fp))[0]
-                if isinstance(title, (list,tuple)): title = title[0]
-                title = safe(title)
-                tracknum_s = f"{int(tracknum):02d}" if tracknum else f"{idx:02d}"
-                # if you want the filename to be "Artist - title" use below, but based on example you prefer "NN. Title.m4a"
-                newname = f"{tracknum_s}. {title}.m4a"
-                destpath = os.path.join(album_dir, newname)
-                print(f"   move: {fp} -> {destpath}")
-                if not args.dry_run:
-                    if os.path.exists(destpath):
-                        base, ext = os.path.splitext(newname)
-                        i = 1
-                        while True:
-                            candidate = os.path.join(album_dir, f"{base} ({i}){ext}")
-                            if not os.path.exists(candidate):
-                                destpath = candidate
-                                break
-                            i += 1
-                    shutil.move(fp, destpath)
+            discs.add(1)
 
-    # Optionally: remove empty original directories
-    if not args.dry_run:
-        for root, dirs, files in os.walk(args.source, topdown=False):
-            # don't remove dest roots if dest == source; only remove empty directories
-            try:
-                if not os.listdir(root):
-                    os.rmdir(root)
-            except Exception:
-                pass
+    if not artist:
+        artist = 'Unknown Artist'
+    if not album:
+        album = album_path.name
+    album_dir_name = build_album_dir_name(artist, year, album, release_type)
 
-if __name__ == "__main__":
+    # If album_path is not already named like album_dir_name, attempt to rename directory
+    parent = album_path.parent
+    target_album_dir = parent / album_dir_name
+    if album_path.name != album_dir_name:
+        # if target exists and is different from our source, do not clobber
+        if target_album_dir.exists() and target_album_dir.resolve() != album_path.resolve():
+            logger.warning(f"Target album dir already exists, skipping rename: {target_album_dir}")
+        else:
+            if dry_run:
+                logger.info(f"DRY RUN: would rename album dir '{album_path.name}' -> '{album_dir_name}'")
+                # For DRY RUN, proceed as if renamed for downstream path calculations
+                renamed_album_dir = target_album_dir
+            else:
+                try:
+                    album_path.rename(target_album_dir)
+                    logger.info(f"Renamed album dir '{album_path}' -> '{target_album_dir}'")
+                    renamed_album_dir = target_album_dir
+                except Exception as e:
+                    logger.error(f"Failed to rename album dir {album_path} -> {target_album_dir}: {e}")
+                    renamed_album_dir = album_path
+    else:
+        renamed_album_dir = album_path
+
+    # Re-scan files under renamed_album_dir for up-to-date list
+    files = [p for p in renamed_album_dir.iterdir() if is_audio_file(p)]
+    for child in renamed_album_dir.iterdir():
+        if child.is_dir():
+            for p in child.iterdir():
+                if is_audio_file(p):
+                    files.append(p)
+
+    # Determine disc set after reading tags (some files may not have disc tags)
+    disc_map = {}  # mapping from file -> (disc, track)
+    for p in files:
+        t = read_tags(p)
+        disc = t.get('disc') or 1
+        track = t.get('track') or 0
+        disc = int(disc)
+        track = int(track)
+        disc_map[p] = (disc, track, t)
+
+    discs_present = sorted({d for d, _, _ in [v for v in disc_map.values()]})
+    multi_disc = len(discs_present) > 1
+
+    # For multi-disc: create per-disc subdir
+    for p, (disc, track, tags) in disc_map.items():
+        track_num = padded(track, 2)
+        # Always include disc number in parentheses prefix per user's last instruction
+        filename = f"({disc}){track_num}. {tags.get('artist') or artist} - {tags.get('title') or p.stem}{p.suffix}"
+        # sanitize filename
+        filename = sanitize_filename(filename)
+        if multi_disc:
+            target_dir = renamed_album_dir / str(disc)
+        else:
+            target_dir = renamed_album_dir
+        target_path = target_dir / filename
+        # If current file already at target path, skip
+        if p.resolve() == target_path.resolve():
+            logger.debug(f"File already at desired path: {p}")
+            continue
+        # If target exists and is same content, skip
+        if target_path.exists() and SKIP_EXISTING == 'yes':
+            logger.info(f"Skipping move because target exists and SKIP_EXISTING=yes: {target_path}")
+            continue
+        ensure_dir(target_dir, dry_run=dry_run)
+        try:
+            moved = move_or_rename(p, target_path, dry_run=dry_run)
+        except Exception as e:
+            logger.error(f"Failed to move {p} -> {target_path}: {e}")
+
+
+def sanitize_filename(name: str) -> str:
+    # Remove problematic characters for cross-platform compatibility
+    name = unicodedata.normalize('NFKD', name)
+    # forbid NUL
+    name = name.replace('\x00', '')
+    # Strip characters commonly problematic in filenames
+    forbidden = r'<>:"/\\|?*'
+    for ch in forbidden:
+        name = name.replace(ch, '')
+    # Collapse multiple spaces
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description='Normalize album directories and track filenames')
+    ap.add_argument('--source', required=True, help='Source root to scan')
+    ap.add_argument('--dest', required=True, help='Destination root (unused: kept for compatibility)')
+    ap.add_argument('--dry-run', action='store_true', help='Do not perform writes, only show what would happen')
+    ap.add_argument('--verbose', action='store_true', help='Verbose logging')
+    args = ap.parse_args(argv)
+
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
+
+    source = Path(args.source).resolve()
+    dest = Path(args.dest).resolve()
+    if not source.exists() or not source.is_dir():
+        logger.error(f"Source does not exist or is not a directory: {source}")
+        sys.exit(2)
+
+    album_dirs = find_album_dirs(source)
+    logger.info(f"Found {len(album_dirs)} album directories under {source}")
+    # Process each album directory
+    for ad in sorted(album_dirs):
+        try:
+            process_album(ad, dest, dry_run=args.dry_run)
+        except Exception as e:
+            logger.exception(f"Error processing album {ad}: {e}")
+
+
+if __name__ == '__main__':
     main()
