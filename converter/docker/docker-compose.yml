@@ -1,0 +1,31 @@
+services:
+  beets:
+    build:
+      context: ./beets
+    image: local/beets:latest
+    container_name: beets_importer
+    # Mount the destination music directory at /data (where beets operates)
+    # and mount your beets config file.
+    volumes:
+      - "${DEST_PATH:-/abs/path/to/aac_dest}:/data:rw"
+      - "${BEETS_CONFIG:-/abs/path/to/beets_config.yaml}:/config.yaml:ro"
+    environment:
+      - BEETS_CONFIG_PATH=/config.yaml
+    # one-shot: run and exit; compose won't try to restart
+    restart: "no"
+    entrypoint: ["/entrypoint.sh"]
+
+  normalizer:
+    build:
+      context: ./normalizer
+    image: local/normalizer:latest
+    container_name: normalizer
+    depends_on:
+      - beets
+    volumes:
+      - "${DEST_PATH:-/abs/path/to/aac_dest}:/data:rw"
+    environment:
+      - DEST_DIR=/data
+      - DRY_RUN=${DRY_RUN:-no}
+    restart: "no"
+    entrypoint: ["/entrypoint.sh"]
