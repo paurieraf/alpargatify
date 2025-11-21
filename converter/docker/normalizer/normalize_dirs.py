@@ -46,6 +46,7 @@ import shutil
 import sys
 import typing as t
 import unicodedata
+from functools import cached_property
 from pathlib import Path
 
 from mutagen import File as MutagenFile
@@ -123,7 +124,7 @@ class Helper(object):
         return str(val).strip()
 
 
-class SongNormalizer(object):
+class FileNormalizer(object):
 
     def __init__(self, path: Path):
         self._path = path
@@ -137,8 +138,74 @@ class SongNormalizer(object):
         return self._path
 
     @path.setter
-    def path(self, path: str):
+    def path(self, _):
         pass
+
+    @cached_property
+    def tags(self) -> dict[str, t.Any]:
+        return self._read_tags()
+
+    ### METHODS
+    def _read_tags(self) -> dict[str, t.Any]:
+        """Return a dict with common tag fields for this file.
+
+        Fields returned: artist, albumartist, album, title, year, disc, track, release_type
+        """
+        data: dict[str, t.Any] = {
+            'artist': None,
+            'albumartist': None,
+            'album': None,
+            'title': None,
+            'year': None,
+            'disc': None,
+            'track': None,
+            'release_type': None,
+        }
+        try:
+
+            m = MutagenFile(str(self._path), easy=False)
+            if m is None:
+                return data
+
+            # Common lookup
+            tags = {key: get_tag_value(m, keys) for key, keys in TAG_KEYS.items()}
+            artist = tags['artist']
+            albumartist = tags['albumartist']
+            album = tags['album']
+            title = tags['title']
+            year = tags['year']
+            # disc and track can be stored as "1/2" or as numbers
+            disc = tags['disc']
+            track = tags['track']
+            release_type = tags['release_type']
+
+            # Normalize
+            data['artist'] = Helper.safe_text(artist) or Helper.safe_text(albumartist) or None
+            data['albumartist'] = Helper.safe_text(albumartist) or Helper.safe_text(artist) or None
+            data['album'] = Helper.safe_text(album) or None
+            data['title'] = Helper.safe_text(title) or None
+            data['year'] = None
+            if year:
+                # try to extract 4-digit year from string
+                myear = re.search(r"(19|20)\d{2}", year)
+                if myear:
+                    data['year'] = myear.group(0)
+                else:
+                    data['year'] = year
+            if disc:
+                mdisc = re.search(r"(\d+)", disc)
+                if mdisc:
+                    data['disc'] = int(mdisc.group(1))
+            if track:
+                mtrack = re.search(r"(\d+)", track)
+                if mtrack:
+                    data['track'] = int(mtrack.group(1))
+            data['release_type'] = Helper.safe_text(release_type) or None
+
+        except Exception as e:
+            logger.warning(f"Failed reading tags for {self._path}: {e}")
+
+        return data
 
 
 class AlbumNormalizer(object):
@@ -155,8 +222,31 @@ class AlbumNormalizer(object):
         return self._path
 
     @path.setter
-    def path(self, path: str):
+    def path(self, _):
         pass
+
+    ### PROPERTIES
+    @property
+    def file_songs(self) -> t.List[FileNormalizer]:
+        return self._gather_audio_files()
+
+    @file_songs.setter
+    def file_songs(self, _):
+        pass
+
+    def _gather_audio_files(self) -> t.List[FileNormalizer]:
+        """
+        Gather audio files directly under the album path and in immediate subdirectories.
+        :return: List of FileNormalizer instances for audio files found (direct children + one level deep).
+        """
+        # Gather audio files directly under self._path and in immediate subdirs (ignore nested albums)
+        files: t.List[FileNormalizer] = [FileNormalizer(p) for p in self._path.iterdir() if Helper.is_audio_file(p)]
+        # Also include audio files in immediate subdirs (commonly disc subdirs)
+        for child in self._path.iterdir():
+            if child.is_dir():
+                files_subdir = [FileNormalizer(p) for p in child.iterdir() if Helper.is_audio_file(p)]
+                files += files_subdir
+        return files
 
     def process_album(self, dry_run: bool = False) -> bool:
         """
@@ -167,21 +257,13 @@ class AlbumNormalizer(object):
 
         logger.info(f"Processing album dir: {self._path}")
 
-        # Gather audio files directly under self._path and in immediate subdirs (ignore nested albums)
-        files = [p for p in self._path.iterdir() if Helper.is_audio_file(p)]
-
-        # Also include audio files in immediate subdirs (commonly disc subdirs)
-        for child in self._path.iterdir():
-            if child.is_dir():
-                for p in child.iterdir():
-                    if Helper.is_audio_file(p):
-                        files.append(p)
+        files = self.file_songs
 
         if not files:
             logger.debug(f"No audio files found in {self._path}")
             return False
 
-        tag_samples = [read_tags(p) for p in files]
+        tag_samples = [p.tags for p in files]
         # Determine album-level metadata by majority / fallbacks
         artist = None
         album = None
@@ -189,19 +271,19 @@ class AlbumNormalizer(object):
         release_type = None
         discs = set()
 
-        for t in tag_samples:
-            if not artist and t.get('albumartist'):
-                artist = t.get('albumartist')
-            if not artist and t.get('artist'):
-                artist = t.get('artist')
-            if not album and t.get('album'):
-                album = t.get('album')
-            if not year and t.get('year'):
-                year = t.get('year')
-            if not release_type and t.get('release_type'):
-                release_type = t.get('release_type')
-            if t.get('disc'):
-                discs.add(int(t.get('disc')))
+        for tag in tag_samples:
+            if not artist and tag.get('albumartist'):
+                artist = tag.get('albumartist')
+            if not artist and tag.get('artist'):
+                artist = tag.get('artist')
+            if not album and tag.get('album'):
+                album = tag.get('album')
+            if not year and tag.get('year'):
+                year = tag.get('year')
+            if not release_type and tag.get('release_type'):
+                release_type = tag.get('release_type')
+            if tag.get('disc'):
+                discs.add(int(tag.get('disc')))
             else:
                 discs.add(1)
 
@@ -235,30 +317,30 @@ class AlbumNormalizer(object):
             renamed_album_dir = self._path
 
         # Re-scan files under renamed_album_dir for up-to-date list
-        files = [p for p in renamed_album_dir.iterdir() if Helper.is_audio_file(p)]
+        files = [FileNormalizer(p) for p in renamed_album_dir.iterdir() if Helper.is_audio_file(p)]
         for child in renamed_album_dir.iterdir():
             if child.is_dir():
                 for p in child.iterdir():
                     if Helper.is_audio_file(p):
-                        files.append(p)
+                        files.append(FileNormalizer(p))
 
         # Determine disc set after reading tags (some files may not have disc tags)
-        disc_map = {}  # mapping from file -> (disc, track)
-        for p in files:
-            t = read_tags(p)
-            disc = t.get('disc') or 1
-            track = t.get('track') or 0
+        disc_map: dict[Path, tuple[int, int, dict[str, t.Any]]] = {}  # mapping from file -> (disc, track, tags)
+        for file in files:
+            tags = file.tags
+            disc = tags.get('disc') or 1
+            track = tags.get('track') or 0
             disc = int(disc)
             track = int(track)
-            disc_map[p] = (disc, track, t)
+            disc_map[file.path] = (disc, track, tags)
 
         discs_present = sorted({d for d, _, _ in [v for v in disc_map.values()]})
         multi_disc = len(discs_present) > 1
 
         # For multi-disc: create per-disc subdir
-        for p, (disc, track, tags) in disc_map.items():
+        for file_path, (disc, track, tags) in disc_map.items():
             track_num = padded(track, 2)
-            filename = f"{track_num}. {tags.get('artist') or artist} - {tags.get('title') or p.stem}{p.suffix}"
+            filename = f"{track_num}. {tags.get('artist') or artist} - {tags.get('title') or file_path.stem}{file_path.suffix}"
             # sanitize filename
             filename = sanitize_filename(filename)
             if multi_disc:
@@ -268,8 +350,8 @@ class AlbumNormalizer(object):
                 target_dir = renamed_album_dir
             target_path = target_dir / filename
             # If current file already at target path, skip
-            if p.resolve() == target_path.resolve():
-                logger.debug(f"File already at desired path: {p}")
+            if file_path.resolve() == target_path.resolve():
+                logger.debug(f"File already at desired path: {file_path}")
                 continue
             # If target exists and is same content, skip
             if target_path.exists() and SKIP_EXISTING:
@@ -277,9 +359,9 @@ class AlbumNormalizer(object):
                 continue
             ensure_dir(target_dir, dry_run=dry_run)
             try:
-                moved = move_or_rename(p, target_path, dry_run=dry_run)
+                moved = move_or_rename(file_path, target_path, dry_run=dry_run)
             except Exception as e:
-                logger.error(f"Failed to move {p} -> {target_path}: {e}")
+                logger.error(f"Failed to move {file_path} -> {target_path}: {e}")
 
 
 class Normalizer(object):
@@ -297,8 +379,8 @@ class Normalizer(object):
         return self._path
 
     @path.setter
-    def path(self, path: str):
-        self._path = Path(path).resolve()
+    def path(self, _):
+        pass
 
     @property
     def album_dirs(self) -> t.List[AlbumNormalizer]:
@@ -341,7 +423,7 @@ class Normalizer(object):
                 logger.exception(f"Error processing album {ad.path}: {e}")
 
 
-def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
+def get_tag_value(mut, keys: t.Tuple[str]) -> t.Optional[str]:
     """Try a few tag keys from mutagen tags, return the first non-empty.
 
     Keys should be the convenient canonical names we want to probe for.
@@ -378,68 +460,6 @@ def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
             except Exception:
                 continue
     return None
-
-
-def read_tags(path: Path) -> dict:
-    """Return a dict with common tag fields for this file.
-
-    Fields returned: artist, albumartist, album, title, year, disc, track, release_type
-    """
-    data = {
-        'artist': None,
-        'albumartist': None,
-        'album': None,
-        'title': None,
-        'year': None,
-        'disc': None,
-        'track': None,
-        'release_type': None,
-    }
-    try:
-
-        m = MutagenFile(str(path), easy=False)
-        if m is None:
-            return data
-
-        # Common lookup
-        tags = {key: get_tag_value(m, keys) for key, keys in TAG_KEYS.items()}
-        artist = tags['artist']
-        albumartist = tags['albumartist']
-        album = tags['album']
-        title = tags['title']
-        year = tags['year']
-        # disc and track can be stored as "1/2" or as numbers
-        disc = tags['disc']
-        track = tags['track']
-        release_type = tags['release_type']
-
-        # Normalize
-        data['artist'] = Helper.safe_text(artist) or Helper.safe_text(albumartist) or None
-        data['albumartist'] = Helper.safe_text(albumartist) or Helper.safe_text(artist) or None
-        data['album'] = Helper.safe_text(album) or None
-        data['title'] = Helper.safe_text(title) or None
-        data['year'] = None
-        if year:
-            # try to extract 4-digit year from string
-            myear = re.search(r"(19|20)\d{2}", year)
-            if myear:
-                data['year'] = myear.group(0)
-            else:
-                data['year'] = year
-        # disc
-        if disc:
-            mdisc = re.search(r"(\d+)", disc)
-            if mdisc:
-                data['disc'] = int(mdisc.group(1))
-        # track
-        if track:
-            mtrack = re.search(r"(\d+)", track)
-            if mtrack:
-                data['track'] = int(mtrack.group(1))
-        data['release_type'] = Helper.safe_text(release_type) or None
-    except Exception as e:
-        logger.debug(f"Failed reading tags for {path}: {e}")
-    return data
 
 
 def padded(n: int, width: int = 2) -> str:
