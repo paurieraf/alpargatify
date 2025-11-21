@@ -328,6 +328,47 @@ class FileNormalizer(object):
 
         return data
 
+    def move_or_rename(self, dst: Path, dry_run: bool = False) -> bool:
+        """
+        Move or rename this object's file path to a new destination.
+        Honors the SKIP_EXISTING flag for overwrite control.
+
+        :param dst: Destination file path.
+        :param dry_run: If True, actions are logged but not executed.
+        :return: True if the move/rename occurred (or would occur in dry-run), False if skipped.
+        """
+
+        # Resolve both paths to detect no-op moves
+        if self._path.resolve() == dst.resolve():
+            logger.debug(f"Source and destination are identical: {self._path}")
+            return True
+
+        # Handle existing destination
+        if dst.exists():
+            if SKIP_EXISTING:
+                logger.info(f"Skipping because destination already exists: {dst}")
+                return True
+            else:
+                # Overwrite logic
+                if dry_run:
+                    logger.info(f"DRY RUN: would overwrite existing {dst} with {self._path}")
+                else:
+                    if dst.is_file():
+                        dst.unlink()
+                    else:
+                        logger.error(f"Destination exists and is a directory: {dst}")
+                        return False
+
+        # Perform (or simulate) the move
+        if dry_run:
+            logger.info(f"DRY RUN: would move '{self._path}' -> '{dst}'")
+            return True
+        else:
+            Helper.ensure_dir(dst.parent, dry_run=False)
+            shutil.move(str(self._path), str(dst))
+            logger.info(f"Moved '{self._path}' -> '{dst}'")
+            return True
+
 
 class AlbumNormalizer(object):
 
@@ -442,22 +483,22 @@ class AlbumNormalizer(object):
                         files.append(FileNormalizer(p))
 
         # Determine disc set after reading tags (some files may not have disc tags)
-        disc_map: dict[Path, tuple[int, int, dict[str, t.Any]]] = {}  # mapping from file -> (disc, track, tags)
+        disc_map: dict[FileNormalizer, tuple[int, int, dict[str, t.Any]]] = {}  # mapping from file -> (disc, track, tags)
         for file in files:
             tags = file.tags
             disc = tags.get('disc') or 1
             track = tags.get('track') or 0
             disc = int(disc)
             track = int(track)
-            disc_map[file.path] = (disc, track, tags)
+            disc_map[file] = (disc, track, tags)
 
         discs_present = sorted({d for d, _, _ in [v for v in disc_map.values()]})
         multi_disc = len(discs_present) > 1
 
         result = []
-        for file_path, (disc, track, tags) in disc_map.items():
+        for file, (disc, track, tags) in disc_map.items():
             track_num = Helper.padded(track, 2)
-            filename = f"{track_num}. {tags.get('artist') or artist} - {tags.get('title') or file_path.stem}{file_path.suffix}"
+            filename = f"{track_num}. {tags.get('artist') or artist} - {tags.get('title') or file.path.stem}{file.path.suffix}"
             # Sanitize filename
             filename = Helper.sanitize_filename(filename)
             # For multi-disc: create per-disc subdir
@@ -468,18 +509,19 @@ class AlbumNormalizer(object):
                 target_dir = renamed_album_dir
             target_path = target_dir / filename
             # If current file already at target path, skip
-            if file_path.resolve() == target_path.resolve():
-                logger.debug(f"File already at desired path: {file_path}")
+            if file.path.resolve() == target_path.resolve():
+                logger.debug(f"File already at desired path: {file.path}")
                 continue
             # If target exists and is same content, skip
             if target_path.exists() and SKIP_EXISTING:
                 logger.info(f"Skipping move because target exists and SKIP_EXISTING=yes: {target_path}")
                 continue
+            # If neither, tries to create the file
             Helper.ensure_dir(target_dir, dry_run=dry_run)
             try:
-                result.append(move_or_rename(file_path, target_path, dry_run=dry_run))
+                result.append(file.move_or_rename(target_path, dry_run=dry_run))
             except Exception as e:
-                logger.error(f"Failed to move {file_path} -> {target_path}: {e}")
+                logger.error(f"Failed to move {file.path} -> {target_path}: {e}")
                 result.append(False)
         return any(result)
 
@@ -541,38 +583,6 @@ class Normalizer(object):
                 ad.process_album(dry_run=dry_run)
             except Exception as e:
                 logger.exception(f"Error processing album {ad.path}: {e}")
-
-
-def move_or_rename(src: Path, dst: Path, dry_run: bool = False):
-    """Move src to dst with overwrite control via SKIP_EXISTING.
-
-    Returns True if moved, False if skipped.
-    """
-    if src.resolve() == dst.resolve():
-        logger.debug(f"Source and destination are same: {src}")
-        return False
-
-    if dst.exists():
-        if SKIP_EXISTING:
-            logger.info(f"Skipping existing target: {dst}")
-            return False
-        else:
-            # overwrite
-            if dry_run:
-                logger.info(f"DRY RUN: would overwrite existing {dst} with {src}")
-            else:
-                if dst.is_file():
-                    dst.unlink()
-                else:
-                    # if it's a directory, fail-safe
-                    raise FileExistsError(f"Destination exists and is a directory: {dst}")
-    if dry_run:
-        logger.info(f"DRY RUN: would move '{src}' -> '{dst}'")
-        return True
-    Helper.ensure_dir(dst.parent, dry_run=False)
-    shutil.move(str(src), str(dst))
-    logger.info(f"Moved '{src}' -> '{dst}'")
-    return True
 
 
 def main(argv=None):
