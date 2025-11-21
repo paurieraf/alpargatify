@@ -71,11 +71,6 @@ logger = logging.getLogger('normalize')
 
 class Helper(object):
 
-    def __new__(cls):
-        if not hasattr(cls, 'instance'):
-            cls.instance = super(Helper, cls).__new__(cls)
-        return cls.instance
-
     def __init__(self):
         pass
 
@@ -230,32 +225,29 @@ class FileNormalizer(object):
         :return: tag value or None
         """
 
-        if self.mutagen is None or not self.mutagen.tags:
+        if self.mutagen is None or not getattr(self.mutagen, "tags", None):
             return None
         tags = self.mutagen.tags
 
-        # For MP4 files mutagen uses keys like '\xa9nam', '\xa9ART', '\xa9day'
-        # For ID3 tags keys are objects (FrameName) - but tags.get('TPE1') works.
-        # Mutagen also supports tags.get('artist') for some formats.
+        # Try exact keys first
+        for k in keys:
+            try:
+                if k in tags:
+                    return Helper.safe_text(tags.get(k))
+            except Exception:
+                # some Tag objects may not support `in` directly, skip
+                pass
 
-        # Try canonical keys first
-        for k in keys:
-            # direct key
-            if k in tags:
-                return Helper.safe_text(tags.get(k))
-            # try lowercase
-            elif k.lower() in tags:
-                return Helper.safe_text(tags.get(k.lower()))
-        # try a more general search: look for keys that contain the canonical key
-        for k in keys:
-            for tag_key in tags.keys():
-                try:
-                    if isinstance(tag_key, str) and k.lower() in tag_key.lower():
-                        v = tags.get(tag_key)
-                        if v:
-                            return Helper.safe_text(v)
-                except Exception:
-                    continue
+        # Fallback: compare stringified tag keys
+        lower_keys = [k.lower() for k in keys]
+        for tag_key in tags.keys():
+            try:
+                tks = str(tag_key).lower()
+            except Exception:
+                continue
+            for lk in lower_keys:
+                if lk in tks:
+                    return Helper.safe_text(tags.get(tag_key))
         return None
 
     def _read_tags(self) -> dict[str, t.Any]:
