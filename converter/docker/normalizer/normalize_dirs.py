@@ -100,15 +100,36 @@ class Helper(object):
         else:
             return True
 
+    @staticmethod
+    def safe_text(val: t.Any) -> str:
+        """
+        Convert a value into a safe, stripped string.
+        :param val: input value. If None, returns an empty string.
+                    If a non-string sequence (list/tuple/other Sequence), returns the string form of
+                    its first element (or '' if the sequence is empty).
+                    Other values are converted to str() and stripped.
+        :return: stripped string representation or '' for None/empty sequence.
+        """
+        if val is None:
+            return ''
 
-class Normalizer(object):
+        # Treat non-string sequences by taking their first element (if any).
+        # We explicitly exclude str/bytes/bytearray so that strings are not treated as sequences.
+        if isinstance(val, t.Sequence) and not isinstance(val, (str, bytes, bytearray)):
+            if len(val) == 0:
+                return ''
+            val = val[0]
 
-    def __init__(self, path: str):
-        self._path = Path(path).resolve()
-        if not Helper.dir_exists(self._path):
-            logger.error(f"Directory does not exist or is not a directory: {self._path}")
+        return str(val).strip()
+
+
+class SongNormalizer(object):
+
+    def __init__(self, path: Path):
+        self._path = path
+        if not path.exists() or not path.is_file():
+            logger.error(f"File does not exist or is not a file: {self._path}")
             sys.exit(2)
-        self._album_dirs = self._find_album_dirs()
 
     ### PROPERTIES
     @property
@@ -117,47 +138,7 @@ class Normalizer(object):
 
     @path.setter
     def path(self, path: str):
-        self._path = Path(path).resolve()
-
-    @property
-    def album_dirs(self) -> t.List[AlbumNormalizer]:
-        return self._album_dirs
-
-    @album_dirs.setter
-    def album_dirs(self, _):
         pass
-
-    def _find_album_dirs(self) -> t.List[AlbumNormalizer]:
-        """
-        Return list of directories that contain at least one audio file.
-        This returns directories anywhere under self._path (including root itself) that
-        contain audio files directly (i.e. not only via subdirectories).
-        :return: list of directories that contain at least one audio file.
-        """
-        albums = []
-        for dirpath, _, filenames in os.walk(self._path):
-            p = Path(dirpath)
-            for fn in filenames:
-                if Path(fn).suffix.lower() in AUDIO_EXTS:
-                    logger.debug(f"Found album directory: {p}")
-                    albums.append(AlbumNormalizer(p))
-                    break
-            else:
-                logger.debug(f"{p} is not an album directory")
-        logger.info(f"Found {len(albums)} album directories under {self._path}")
-        return albums
-
-    def normalize(self, dry_run: bool = False) -> None:
-        """
-        Process all directory-albums recursively.
-        :param dry_run: don't apply anything
-        :return: None
-        """
-        for ad in self.album_dirs:
-            try:
-                ad.process_album(dry_run=dry_run)
-            except Exception as e:
-                logger.exception(f"Error processing album {ad}: {e}")
 
 
 class AlbumNormalizer(object):
@@ -175,21 +156,30 @@ class AlbumNormalizer(object):
 
     @path.setter
     def path(self, path: str):
-        self._path = Path(path).resolve()
+        pass
 
-    def process_album(self, dry_run: bool = False):
+    def process_album(self, dry_run: bool = False) -> bool:
+        """
+        Normalize the content of an album directory.
+        :param dry_run: don't apply anything.
+        :return: True if it went successfully is, False otherwise.
+        """
+
         logger.info(f"Processing album dir: {self._path}")
+
         # Gather audio files directly under self._path and in immediate subdirs (ignore nested albums)
         files = [p for p in self._path.iterdir() if Helper.is_audio_file(p)]
+
         # Also include audio files in immediate subdirs (commonly disc subdirs)
         for child in self._path.iterdir():
             if child.is_dir():
                 for p in child.iterdir():
                     if Helper.is_audio_file(p):
                         files.append(p)
+
         if not files:
             logger.debug(f"No audio files found in {self._path}")
-            return
+            return False
 
         tag_samples = [read_tags(p) for p in files]
         # Determine album-level metadata by majority / fallbacks
@@ -292,27 +282,63 @@ class AlbumNormalizer(object):
                 logger.error(f"Failed to move {p} -> {target_path}: {e}")
 
 
+class Normalizer(object):
 
-def safe_text(val: t.Any) -> str:
-    """
-    Convert a value into a safe, stripped string.
-    :param val: input value. If None, returns an empty string.
-                If a non-string sequence (list/tuple/other Sequence), returns the string form of
-                its first element (or '' if the sequence is empty).
-                Other values are converted to str() and stripped.
-    :return: stripped string representation or '' for None/empty sequence.
-    """
-    if val is None:
-        return ''
+    def __init__(self, path: str):
+        self._path = Path(path).resolve()
+        if not Helper.dir_exists(self._path):
+            logger.error(f"Directory does not exist or is not a directory: {self._path}")
+            sys.exit(2)
+        self._album_dirs = self._find_album_dirs()
 
-    # Treat non-string sequences by taking their first element (if any).
-    # We explicitly exclude str/bytes/bytearray so that strings are not treated as sequences.
-    if isinstance(val, t.Sequence) and not isinstance(val, (str, bytes, bytearray)):
-        if len(val) == 0:
-            return ''
-        val = val[0]
+    ### PROPERTIES
+    @property
+    def path(self) -> Path:
+        return self._path
 
-    return str(val).strip()
+    @path.setter
+    def path(self, path: str):
+        self._path = Path(path).resolve()
+
+    @property
+    def album_dirs(self) -> t.List[AlbumNormalizer]:
+        return self._album_dirs
+
+    @album_dirs.setter
+    def album_dirs(self, _):
+        pass
+
+    def _find_album_dirs(self) -> t.List[AlbumNormalizer]:
+        """
+        Return list of directories that contain at least one audio file.
+        This returns directories anywhere under self._path (including root itself) that
+        contain audio files directly (i.e. not only via subdirectories).
+        :return: list of directories that contain at least one audio file.
+        """
+        albums = []
+        for dirpath, _, filenames in os.walk(self._path):
+            p = Path(dirpath)
+            for fn in filenames:
+                if Path(fn).suffix.lower() in AUDIO_EXTS:
+                    logger.debug(f"Found album directory: {p}")
+                    albums.append(AlbumNormalizer(p))
+                    break
+            else:
+                logger.debug(f"{p} is not an album directory")
+        logger.info(f"Found {len(albums)} album directories under {self._path}")
+        return albums
+
+    def normalize(self, dry_run: bool = False) -> None:
+        """
+        Process all directory-albums recursively.
+        :param dry_run: don't apply anything
+        :return: None
+        """
+        for ad in self.album_dirs:
+            try:
+                ad.process_album(dry_run=dry_run)
+            except Exception as e:
+                logger.exception(f"Error processing album {ad.path}: {e}")
 
 
 def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
@@ -337,10 +363,10 @@ def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
     for k in keys:
         # direct key
         if k in tags:
-            return safe_text(tags.get(k))
+            return Helper.safe_text(tags.get(k))
         # try lowercase
         if k.lower() in tags:
-            return safe_text(tags.get(k.lower()))
+            return Helper.safe_text(tags.get(k.lower()))
     # try a more general search: look for keys that contain the canonical key
     for k in keys:
         for tkey in tags.keys():
@@ -348,7 +374,7 @@ def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
                 if isinstance(tkey, str) and k.lower() in tkey.lower():
                     v = tags.get(tkey)
                     if v:
-                        return safe_text(v)
+                        return Helper.safe_text(v)
             except Exception:
                 continue
     return None
@@ -388,10 +414,10 @@ def read_tags(path: Path) -> dict:
         release_type = tags['release_type']
 
         # Normalize
-        data['artist'] = safe_text(artist) or safe_text(albumartist) or None
-        data['albumartist'] = safe_text(albumartist) or safe_text(artist) or None
-        data['album'] = safe_text(album) or None
-        data['title'] = safe_text(title) or None
+        data['artist'] = Helper.safe_text(artist) or Helper.safe_text(albumartist) or None
+        data['albumartist'] = Helper.safe_text(albumartist) or Helper.safe_text(artist) or None
+        data['album'] = Helper.safe_text(album) or None
+        data['title'] = Helper.safe_text(title) or None
         data['year'] = None
         if year:
             # try to extract 4-digit year from string
@@ -410,7 +436,7 @@ def read_tags(path: Path) -> dict:
             mtrack = re.search(r"(\d+)", track)
             if mtrack:
                 data['track'] = int(mtrack.group(1))
-        data['release_type'] = safe_text(release_type) or None
+        data['release_type'] = Helper.safe_text(release_type) or None
     except Exception as e:
         logger.debug(f"Failed reading tags for {path}: {e}")
     return data
