@@ -47,35 +47,82 @@ import sys
 import typing as t
 import unicodedata
 from pathlib import Path
+from typing import Final
 
 from mutagen import File as MutagenFile
 
-AUDIO_EXTS = {'.m4a', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.opus'}
 
+AUDIO_EXTS: Final[tuple] = ('.m4a', '.mp4', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.opus')
 # Environment-controlled behavior
-SKIP_EXISTING = os.environ.get('SKIP_EXISTING', 'yes').lower()
-
+SKIP_EXISTING: Final[bool] = True if os.environ.get('SKIP_EXISTING', 'yes').lower() == "yes" else False
 # Helpers
 logger = logging.getLogger('normalize')
 
 
-def is_audio_file(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in AUDIO_EXTS
+class Helper(object):
+
+    def __new__(cls):
+        if not hasattr(cls, 'instance'):
+            cls.instance = super(Helper, cls).__new__(cls)
+        return cls.instance
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def get_path(path: str) -> Path:
+        """
+        Get Path object from path.
+        :param path: string to locate path.
+        :return: Path object from path.
+        """
+        return Path(path).resolve()
+
+    @staticmethod
+    def dir_exists(path: Path) -> bool:
+        """
+        Check if a directory exists.
+        :param path: Path to the directory to check.
+        :return: True if exists, False otherwise.
+        """
+        if not path.exists() or not path.is_dir():
+            return False
+        else:
+            return True
+
+    @staticmethod
+    def is_audio_file(path: Path) -> bool:
+        """
+        Check if a file is an audio file.
+        :param path: Path to the file to check.
+        :return: True if it is, False otherwise.
+        """
+        return path.is_file() and path.suffix.lower() in AUDIO_EXTS
+
+    @staticmethod
+    def find_album_dirs(root: Path) -> t.List[Path]:
+        """
+        Return list of directories that contain at least one audio file.
+        This returns directories anywhere under root (including root itself) that
+        contain audio files directly (i.e. not only via subdirectories).
+        :param root: Path to the directory to search for audio files.
+        :return: list of directories that contain at least one audio file.
+        """
+        albums = []
+        for dirpath, _, filenames in os.walk(root):
+            p = Path(dirpath)
+            for fn in filenames:
+                if Path(fn).suffix.lower() in AUDIO_EXTS:
+                    logger.debug(f"Found album directory: {p}")
+                    albums.append(p)
+                    break
+            else:
+                logger.debug(f"{p} is not an album directory")
+        return albums
 
 
-def find_album_dirs(root: Path) -> t.List[Path]:
-    """Return list of directories that contain at least one audio file.
-
-    This returns directories anywhere under root (including root itself) that
-    contain audio files directly (i.e. not only via subdirectories)."""
-    albums = []
-    for dirpath, _, filenames in os.walk(root):
-        p = Path(dirpath)
-        for fn in filenames:
-            if Path(fn).suffix.lower() in AUDIO_EXTS:
-                albums.append(p)
-                break
-    return albums
+class Normalizer(object):
+    pass
 
 
 def safe_text(val: t.Any) -> str:
@@ -95,6 +142,8 @@ def get_tag_value(mut, keys: t.List[str]) -> t.Optional[str]:
     if mut is None:
         return None
     tags = mut.tags
+    
+    logger.debug(f"Tags for file: {tags}")
     if not tags:
         return None
 
@@ -240,7 +289,7 @@ def move_or_rename(src: Path, dst: Path, dry_run: bool = False):
         return False
 
     if dst.exists():
-        if SKIP_EXISTING == 'yes':
+        if SKIP_EXISTING:
             logger.info(f"Skipping existing target: {dst}")
             return False
         else:
@@ -265,12 +314,12 @@ def move_or_rename(src: Path, dst: Path, dry_run: bool = False):
 def process_album(album_path: Path, dest_root: Path, dry_run: bool = False):
     logger.info(f"Processing album dir: {album_path}")
     # Gather audio files directly under album_path and in immediate subdirs (ignore nested albums)
-    files = [p for p in album_path.iterdir() if is_audio_file(p)]
+    files = [p for p in album_path.iterdir() if Helper.is_audio_file(p)]
     # Also include audio files in immediate subdirs (commonly disc subdirs)
     for child in album_path.iterdir():
         if child.is_dir():
             for p in child.iterdir():
-                if is_audio_file(p):
+                if Helper.is_audio_file(p):
                     files.append(p)
     if not files:
         logger.debug(f"No audio files found in {album_path}")
@@ -330,11 +379,11 @@ def process_album(album_path: Path, dest_root: Path, dry_run: bool = False):
         renamed_album_dir = album_path
 
     # Re-scan files under renamed_album_dir for up-to-date list
-    files = [p for p in renamed_album_dir.iterdir() if is_audio_file(p)]
+    files = [p for p in renamed_album_dir.iterdir() if Helper.is_audio_file(p)]
     for child in renamed_album_dir.iterdir():
         if child.is_dir():
             for p in child.iterdir():
-                if is_audio_file(p):
+                if Helper.is_audio_file(p):
                     files.append(p)
 
     # Determine disc set after reading tags (some files may not have disc tags)
@@ -367,7 +416,7 @@ def process_album(album_path: Path, dest_root: Path, dry_run: bool = False):
             logger.debug(f"File already at desired path: {p}")
             continue
         # If target exists and is same content, skip
-        if target_path.exists() and SKIP_EXISTING == 'yes':
+        if target_path.exists() and SKIP_EXISTING:
             logger.info(f"Skipping move because target exists and SKIP_EXISTING=yes: {target_path}")
             continue
         ensure_dir(target_dir, dry_run=dry_run)
@@ -402,13 +451,13 @@ def main(argv=None):
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
-    source = Path(args.source).resolve()
-    dest = Path(args.dest).resolve()
-    if not source.exists() or not source.is_dir():
+    source = Helper.get_path(args.source)
+    dest = Helper.get_path(args.dest)
+    if not Helper.dir_exists(source):
         logger.error(f"Source does not exist or is not a directory: {source}")
         sys.exit(2)
 
-    album_dirs = find_album_dirs(source)
+    album_dirs = Helper.find_album_dirs(source)
     logger.info(f"Found {len(album_dirs)} album directories under {source}")
     # Process each album directory
     for ad in sorted(album_dirs):
