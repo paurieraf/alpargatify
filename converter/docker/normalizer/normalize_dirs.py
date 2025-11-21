@@ -394,7 +394,7 @@ class AlbumNormalizer(object):
             if child.is_dir():
                 files_subdir = [FileNormalizer(p) for p in child.iterdir() if Helper.is_audio_file(p)]
                 files += files_subdir
-        logger.debug(f"Found {len(files)} audio files in {self._path}: {(f.path.name for f in files)}")
+        logger.debug(f"Found {len(files)} audio files in {self._path}: {[f.path.name for f in files]}")
         return files
 
     def get_new_album_name(self, dry_run: bool = False) -> Path:
@@ -501,7 +501,7 @@ class AlbumNormalizer(object):
                 for old_file in self.file_songs:
                     if (
                         old_file.tags["title"] == file.tags["title"] and old_file.tags["track"] == file.tags["track"]
-                        and old_file.path.parent != file.path.parent
+                        and old_file.path != target_path and old_file.path.is_file()
                     ):
                         logger.debug(f"Removing duplicate file: {old_file.path}")
                         os.remove(old_file.path)
