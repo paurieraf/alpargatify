@@ -14,12 +14,11 @@ RUN apt-get update \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy pinned requirements (you should generate this with pip-compile or hand-pin)
-# For simplicity we install beets with extras: fetchart,embedart
+# Install beets with desired plugins
 RUN pip install --upgrade pip setuptools wheel \
   && pip install "beets[lastgenre,fetchart,embedart,lyrics]==${BEETS_VERSION}"
 
-# ---- final (runtime) image ----
+# ---- runtime image ----
 FROM python:3.14-slim AS runtime
 
 ENV PATH="/opt/venv/bin:$PATH"
