@@ -9,3 +9,7 @@
 
 # Python venvs
 **.venv
+
+# Database and cache files
+.db*
+**/cache/
