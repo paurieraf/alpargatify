@@ -31,7 +31,7 @@ Enabled = false # Let's take a look at this later
 Enabled = true
 
 [Prometheus]
-Enabled = false # Let's take a look at this later
+Enabled = true
 
 [Scanner]
 Enabled = true

@@ -5,8 +5,12 @@
 # - exports PUID and PGID derived from NAVIDROME paths
 # - copies navidrome.toml and background directory into config path
 # - runs all docker-compose*.yml files found next to the script (combined)
+# Modes:
+#   Default: bring services up (docker compose up -d / docker-compose up -d)
+#   --down : stop services (docker compose down / docker-compose down)
 
 set -euo pipefail
+IFS=$'\n\t'
 
 ###############################################################################
 # Helpers
@@ -29,6 +33,38 @@ cleanup_tmpfiles() {
   fi
 }
 trap cleanup_tmpfiles EXIT
+
+###############################################################################
+# Parse args (only mode flags)
+###############################################################################
+MODE="up" # values: up (default), down
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--down] [-h|--help]
+
+Modes:
+  (default)         : bring services up (docker compose up -d)
+  --down            : stop services (docker compose down)
+
+Examples:
+  $(basename "$0")
+  $(basename "$0") --down
+EOF
+}
+
+# simple args parser
+POSITIONAL=()
+while (( "$#" )); do
+  case "$1" in
+    --down) MODE="down"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]:-}"
 
 ###############################################################################
 # Locate script dir and load .env
@@ -60,10 +96,11 @@ set +a
 ###############################################################################
 echo
 echo "==== Navidrome bootstrap - summary ===="
-echo "Navidrome version: ${NAVIDROME_VERSION}"
+echo "Mode:                 ${MODE}"
+echo "Navidrome version:    ${NAVIDROME_VERSION}"
 echo "Navidrome music path: ${NAVIDROME_MUSIC_PATH}"
-echo "Navidrome config path: ${NAVIDROME_CONFIG_PATH}"
-echo "Script directory: $SCRIPT_DIR"
+echo "Navidrome config path:${NAVIDROME_CONFIG_PATH}"
+echo "Script directory:     $SCRIPT_DIR"
 echo "======================================"
 echo
 
@@ -151,10 +188,65 @@ else
   warn "Template background directory not found in $SCRIPT_DIR. Skipping copy."
 fi
 
-# Launch all compose within the script directory
+###############################################################################
+# Determine docker compose command (docker compose vs docker-compose)
+###############################################################################
+COMPOSE_CMD=""
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
+else
+  err "Neither 'docker compose' nor 'docker-compose' found. Install Docker Compose."
+  exit 6
+fi
+info "Using compose command: ${COMPOSE_CMD}"
+
+###############################################################################
+# Gather docker-compose files (fail if none found)
+###############################################################################
+# Use nullglob to avoid literal pattern if no files exist
+shopt -s nullglob
+compose_ymls=( "$SCRIPT_DIR"/docker-compose*.yml )
+shopt -u nullglob
+
+if [[ ${#compose_ymls[@]} -eq 0 ]]; then
+  err "No docker-compose*.yml files found in script directory ($SCRIPT_DIR)."
+  exit 7
+fi
+
 compose_files=()
-for f in "$SCRIPT_DIR"/docker-compose*.yml; do
-    compose_files+=(-f "$f")
+for f in "${compose_ymls[@]}"; do
+  compose_files+=(-f "$f")
 done
 
-docker-compose "${compose_files[@]}" up -d
+###############################################################################
+# Invoke compose with selected mode
+###############################################################################
+info "Invoking docker compose mode: ${MODE}"
+
+if [[ "$MODE" == "up" ]]; then
+  if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+    docker compose "${compose_files[@]}" up -d
+  else
+    docker-compose "${compose_files[@]}" up -d
+  fi
+  EXIT_CODE=$?
+elif [[ "$MODE" == "down" ]]; then
+  if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+    docker compose  "${compose_files[@]}" down
+  else
+    docker-compose "${compose_files[@]}" down
+  fi
+  EXIT_CODE=$?
+else
+  err "Unknown MODE: $MODE"
+  exit 2
+fi
+
+if [[ $EXIT_CODE -ne 0 ]]; then
+  err "Docker compose command exited with code: $EXIT_CODE"
+  exit $EXIT_CODE
+fi
+
+info "Compose command finished successfully."
