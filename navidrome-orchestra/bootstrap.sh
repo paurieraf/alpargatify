@@ -363,5 +363,5 @@ if [[ $EXIT_CODE -ne 0 ]]; then
 fi
 
 info "Compose command finished successfully."
-info "Prometheus will scrape navidrome on path: ${CUSTOM_METRICS_PATH}"
+info "Prometheus will scrape on path: ${CUSTOM_METRICS_PATH}"
 info "Rendered prometheus.yml & Caddyfile have been placed under ${NAVIDROME_CONFIG_PATH}"

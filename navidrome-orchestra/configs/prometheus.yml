@@ -13,12 +13,12 @@ scrape_configs:
 
   # cAdvisor (container metrics)
   - job_name: 'cadvisor'
-    metrics_path: /metrics
+    metrics_path: <custom_metrics_path>
     static_configs:
       - targets: ['cadvisor:<cadvisor_port>']
 
   # node-exporter (host metrics)
   - job_name: 'node'
-    metrics_path: /metrics
+    metrics_path: <custom_metrics_path>
     static_configs:
       - targets: ['node-exporter:<node_exporter_port>']
