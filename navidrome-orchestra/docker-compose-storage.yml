@@ -11,3 +11,29 @@ services:
     networks:
       - navidrome
     restart: unless-stopped
+
+  syncthing:
+    image: syncthing/syncthing:2.0.11
+    container_name: syncthing
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    volumes:
+      # Syncthing config directory (will contain config.xml, key, index, etc.)
+      - ${VOLUMES_PATH}/syncthing/config:/var/syncthing/config:rw
+      # Mount the actual music folder used by Navidrome so Syncthing reads/writes into it
+      - ${NAVIDROME_MUSIC_PATH}:/var/syncthing/music:rw
+    ports:
+      # Syncthing TCP and UDP sync port
+      - "${SYNCTHING_SYNC_PORT}:22000/tcp"
+      - "${SYNCTHING_SYNC_PORT}:22000/udp"
+      # Local discovery via multicast (UDP)
+      - "${SYNCTHING_DISCOVERY_PORT}:21027/udp"
+    networks:
+      - navidrome
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:8384/ || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3

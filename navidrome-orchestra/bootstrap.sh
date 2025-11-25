@@ -122,8 +122,6 @@ set +a
 ###############################################################################
 : "${DOMAIN:?"DOMAIN is not set in .env"}"
 : "${NAVIDROME_MUSIC_PATH:?"NAVIDROME_MUSIC_PATH is not set in .env"}"
-# NAVIDROME_PORT kept mandatory (example service); other ports handled dynamically
-: "${NAVIDROME_PORT:?"NAVIDROME_PORT is not set in .env"}"
 
 if [ -z "${GRAFANA_ADMIN_USER:-}" ] ||  [ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
   err "GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD must be set in .env. Exiting."
@@ -146,7 +144,6 @@ while IFS='=' read -r name _; do
   fi
 done < <(env)
 
-# Ensure at least the NAVIDROME_PORT exists (we required it earlier), and validate numeric
 for pv in "${PORT_VARS[@]:-}"; do
   val="${!pv:-}"
   if [[ -z "$val" ]]; then

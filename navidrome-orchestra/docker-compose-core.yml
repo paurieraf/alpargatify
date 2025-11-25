@@ -3,8 +3,6 @@ services:
     image: deluan/navidrome:0.58.5
     container_name: navidrome
     user: ${PUID}:${PGID}
-    ports:
-      - "${NAVIDROME_PORT}:4533"
     environment:
       ND_CONFIGFILE: /data/navidrome.toml
       ND_LASTFM_APIKEY: ${LASTFM_APIKEY}
@@ -19,6 +17,11 @@ services:
     networks:
       - navidrome
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:4533/ || exit 1"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
 
 networks:
   navidrome:
