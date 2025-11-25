@@ -44,9 +44,10 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.52.0
     container_name: cadvisor
     command:
+      - -port=${CADVISOR_PORT}
       - --prometheus_endpoint=${CUSTOM_METRICS_PATH}
     ports:
-      - "8080:${CADVISOR_PORT}"
+      - "${CADVISOR_PORT}:${CADVISOR_PORT}"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw                # Only works with rw permissions
@@ -61,8 +62,9 @@ services:
     container_name: node-exporter
     command:
       - --web.telemetry-path=${CUSTOM_METRICS_PATH}
+      - --web.listen-address=:${NODE_EXPORTER_PORT}
     ports:
-      - 9100:${NODE_EXPORTER_PORT}
+      - ${NODE_EXPORTER_PORT}:${NODE_EXPORTER_PORT}
     networks:
       - navidrome
     restart: unless-stopped

@@ -4,7 +4,7 @@ services:
     container_name: navidrome
     user: ${PUID}:${PGID}
     ports:
-      - "4533:${NAVIDROME_PORT}"
+      - "${NAVIDROME_PORT}:${NAVIDROME_PORT}"
     environment:
       ND_PORT: ${NAVIDROME_PORT}
       ND_CONFIGFILE: /data/navidrome.toml

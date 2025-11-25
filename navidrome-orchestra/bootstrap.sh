@@ -321,10 +321,10 @@ info "Invoking docker compose mode: ${MODE}"
 
 if [[ "$MODE" == "up" ]]; then
   # Force recreate so we make sure configuration stays correct
-  compose "${compose_args[@]}" up -d --force-recreate	
+  compose "${compose_args[@]}" up -d --force-recreate	--remove-orphans
   EXIT_CODE=$?
 elif [[ "$MODE" == "down" ]]; then
-  compose "${compose_args[@]}" down
+  compose "${compose_args[@]}" down --remove-orphans
   EXIT_CODE=$?
 else
   err "Unknown MODE: $MODE"
