@@ -3,6 +3,8 @@ services:
   grafana:
     image: grafana/grafana:12.3
     container_name: grafana
+    labels:
+      - 'wud.tag.include=^\d+\.\d+$'
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -24,6 +26,8 @@ services:
   prometheus:
     image: prom/prometheus:v3.7.3
     container_name: prometheus
+    labels:
+      - 'wud.tag.include=^v\d+\.\d+\.\d+$'
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -47,8 +51,10 @@ services:
       retries: 3
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.52.0
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
     container_name: cadvisor
+    labels:
+      - 'wud.tag.include=^v\d+\.\d+\.\d+$'
     command:
       - --prometheus_endpoint=${CUSTOM_METRICS_PATH}
     volumes:
@@ -68,6 +74,8 @@ services:
   node-exporter:
     image: prom/node-exporter:v1.10.2
     container_name: node-exporter
+    labels:
+      - 'wud.tag.include=^v\d+\.\d+\.\d+$'
     command:
       - --web.telemetry-path=${CUSTOM_METRICS_PATH}
     networks:

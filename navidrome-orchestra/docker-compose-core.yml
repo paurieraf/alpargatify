@@ -2,6 +2,8 @@ services:
   navidrome:
     image: deluan/navidrome:0.58.5
     container_name: navidrome
+    labels:
+      - 'wud.tag.include=^\d+\.\d+\.\d+$'
     user: ${PUID}:${PGID}
     environment:
       ND_CONFIGFILE: /data/navidrome.toml

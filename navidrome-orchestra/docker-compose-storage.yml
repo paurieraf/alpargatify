@@ -1,7 +1,9 @@
 services:
   sftp:
-    image: atmoz/sftp:alpine-3.6
+    image: atmoz/sftp:alpine-3.7
     container_name: sftp
+    labels:
+      - 'wud.tag.include=^alpine-\d+\.\d+$'
     command:
       - ${SFTP_USER}:${SFTP_PASSWORD}:${PUID}:${PGID}
     volumes:
@@ -15,6 +17,8 @@ services:
   syncthing:
     image: syncthing/syncthing:2.0.11
     container_name: syncthing
+    labels:
+      - 'wud.tag.include=^\d+\.\d+\.\d+$'
     entrypoint: ["/usr/local/bin/docker-entrypoint.sh"]
     environment:
       - PUID=${PUID}
