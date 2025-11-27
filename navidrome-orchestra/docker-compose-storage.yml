@@ -11,7 +11,7 @@ services:
     ports:
       - "${SFTP_PORT}:22"
     networks:
-      - navidrome
+      - internal
     restart: unless-stopped
 
   syncthing:
@@ -39,7 +39,7 @@ services:
       - "${SYNCTHING_SYNC_PORT}:22000/udp"
       - "${SYNCTHING_DISCOVERY_PORT}:21027/udp"
     networks:
-      - navidrome
+      - frontend
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:8384/ || exit 1"]
@@ -69,7 +69,7 @@ services:
       # custom entrypoint script in your repo (read-only)
       - ./configs/filebrowser-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro
     networks:
-      - navidrome
+      - frontend
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:8080/ || exit 1"]

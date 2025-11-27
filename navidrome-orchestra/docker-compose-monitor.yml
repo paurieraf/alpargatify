@@ -12,10 +12,11 @@ services:
     volumes:
       - ./configs/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yaml
       - ./configs/grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/main.yaml
-      - ./grafana-dashboards:/var/lib/grafana/dashboards
       - ${VOLUMES_PATH}/grafana:/var/lib/grafana
+      - ./grafana-dashboards:/var/lib/grafana/dashboards
     networks:
-      - navidrome
+      - frontend
+      - monitoring
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:3000/ || exit 1"]
@@ -42,7 +43,7 @@ services:
       - ./configs/prometheus.yml.custom:/etc/prometheus/prometheus.yml:ro
       - ${VOLUMES_PATH}/prometheus:/prometheus
     networks:
-      - navidrome
+      - monitoring
       - caddy-with-admin
     restart: unless-stopped
     healthcheck:
@@ -64,7 +65,8 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     networks:
-      - navidrome
+      - frontend
+      - monitoring
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:8080/ || exit 1"]
@@ -80,5 +82,5 @@ services:
     command:
       - --web.telemetry-path=${CUSTOM_METRICS_PATH}
     networks:
-      - navidrome
+      - monitoring
     restart: unless-stopped

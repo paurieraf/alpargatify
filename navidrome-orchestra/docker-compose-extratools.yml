@@ -34,7 +34,8 @@ services:
       - ./docker-compose-network.yml:/wud/docker-compose-network.yml
       - ./docker-compose-storage.yml:/wud/docker-compose-storage.yml
     networks:
-      - navidrome
+      - frontend
+      - monitoring
     restart: unless-stopped
     healthcheck:
       test: curl --fail http://127.0.0.1:2999/health || exit 1

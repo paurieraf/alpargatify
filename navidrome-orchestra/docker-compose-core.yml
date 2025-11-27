@@ -18,7 +18,8 @@ services:
       - "./configs/navidrome.toml:/data/navidrome.toml:ro"
       - "${BACKGROUNDS_PATH}:/backgrounds:ro"
     networks:
-      - navidrome
+      - frontend
+      - monitoring
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:4533/ || exit 1"]
@@ -27,4 +28,7 @@ services:
       retries: 3
 
 networks:
-  navidrome:
+  internal:
+  frontend:
+  monitoring:
+  caddy-with-admin:
