@@ -133,6 +133,12 @@ if [ -z "${SFTP_USER:-}" ] ||  [ -z "${SFTP_PASSWORD:-}" ]; then
   exit 3
 fi
 
+# New required vars for WUD (as requested)
+if [ -z "${WUD_ADMIN_USER:-}" ] || [ -z "${WUD_ADMIN_PASSWORD:-}" ]; then
+  err "WUD_ADMIN_USER and WUD_ADMIN_PASSWORD must be set in .env. Exiting."
+  exit 3
+fi
+
 ###############################################################################
 # Collect and validate all *_PORT variables dynamically
 # - builds PORT_VARS array containing variable names (e.g. PROMETHEUS_PORT)
@@ -159,7 +165,7 @@ for pv in "${PORT_VARS[@]:-}"; do
 done
 
 ###############################################################################
-# Show info
+# Show info (avoid printing secrets)
 ###############################################################################
 echo
 echo "==== Navidrome bootstrap - summary ===="
@@ -175,6 +181,16 @@ if [[ ${#PORT_VARS[@]} -gt 0 ]]; then
 else
   echo "No *_PORT variables detected in environment."
 fi
+
+# Show which secrets are present without printing their values
+echo "Secrets present:"
+for s in WUD_ADMIN_PASSWORD GRAFANA_ADMIN_PASSWORD SFTP_PASSWORD SYNCTHING_GUI_PASSWORD; do
+  if [[ -n "${!s:-}" ]]; then
+    echo "  - ${s}=<set>"
+  else
+    echo "  - ${s}=<not set>"
+  fi
+done
 echo "======================================"
 echo
 
@@ -248,10 +264,75 @@ export CUSTOM_METRICS_PATH
 info "Generated CUSTOM_METRICS_PATH=${CUSTOM_METRICS_PATH}"
 
 ###############################################################################
+# Generate Navidrome metrics password (random) and export it
+# - This is used in configs/prometheus.yml for the navidrome job's basic_auth
+# - We do not print the password to logs
+###############################################################################
+generate_random_password() {
+  # try openssl for secure random; fallback to hex from /dev/urandom
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 12
+  else
+    od -An -N12 -tx1 /dev/urandom | tr -d ' \n' | cut -c1-16
+  fi
+}
+
+NAVIDROME_METRICS_PASSWORD="$(generate_random_password)"
+export NAVIDROME_METRICS_PASSWORD
+info "Generated NAVIDROME_METRICS_PASSWORD (hidden)."
+
+###############################################################################
+# Generate Htpasswd-compliant hash for WUD_ADMIN_PASSWORD and export it
+# - Preferred: openssl passwd -apr1 (Apache MD5)
+# - Fallback: use htpasswd (bcrypt) if available
+###############################################################################
+generate_htpasswd_hash() {
+  local user="$1"; local pass="$2"; local hash=""
+
+  # 1) openssl passwd -apr1 -> Apache MD5 ($apr1$...)
+  if command -v openssl >/dev/null 2>&1; then
+    if hash="$(openssl passwd -apr1 "$pass" 2>/dev/null)"; then
+      echo "$hash"
+      return 0
+    fi
+  fi
+
+  # 2) htpasswd (apache tools) -> bcrypt with -B
+  if command -v htpasswd >/dev/null 2>&1; then
+    # htpasswd -nbB user pass  prints: user:$2y$...
+    hash_line="$(htpasswd -nbB "$user" "$pass" 2>/dev/null || true)"
+    # extract after colon
+    hash="${hash_line#*:}"
+    if [[ -n "$hash" ]]; then
+      echo "$hash"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+# Create the hashed password and export
+if [[ -n "${WUD_ADMIN_PASSWORD:-}" ]]; then
+  WUD_ADMIN_PASSWORD_HASH="$(generate_htpasswd_hash "$WUD_ADMIN_USER" "$WUD_ADMIN_PASSWORD" || true)"
+  if [[ -z "${WUD_ADMIN_PASSWORD_HASH:-}" ]]; then
+    err "Failed to generate htpasswd-compliant hash for WUD_ADMIN_PASSWORD. Ensure 'htpasswd' or 'openssl' or 'python3' is available."
+    exit 5
+  fi
+  export WUD_ADMIN_PASSWORD_HASH
+  info "Generated WUD_ADMIN_PASSWORD_HASH (hidden)."
+
+else
+  err "WUD_ADMIN_PASSWORD is empty; cannot generate hash."
+  exit 3
+fi
+
+###############################################################################
 # Template expansion helper (dynamic PORT placeholder handling)
 # - we will only render the two config files: configs/prometheus.yml and configs/Caddyfile
 # - dynamically build sed replacements for all discovered *_PORT variables
 # - also always replace <custom_metrics_path> and <domain>
+# - also ensure <wud_admin_user>, <wud_admin_password>, <navidrome_metrics_password> are replaced
 ###############################################################################
 TMP_FILES_CREATED=0
 TMP_FILES=()
@@ -276,13 +357,17 @@ expand_vars_file() {
   sed_args+=( -e "s|<custom_metrics_path>|\\\${CUSTOM_METRICS_PATH}|g" )
   sed_args+=( -e "s|<domain>|\\\${DOMAIN}|g" )
 
+  # Ensure WUD and Navidrome placeholders are available for replacement
+  sed_args+=( -e "s|<wud_admin_user>|\\\${WUD_ADMIN_USER}|g" )
+  sed_args+=( -e "s|<wud_admin_password>|\\\${WUD_ADMIN_PASSWORD}|g" )
+  sed_args+=( -e "s|<navidrome_metrics_password>|\\\${NAVIDROME_METRICS_PASSWORD}|g" )
+
   # For each discovered PORT var, add a replacement
   for pv in "${PORT_VARS[@]:-}"; do
     # lowercase placeholder name (PROMETHEUS_PORT -> prometheus_port)
     lc="$(echo "$pv" | tr '[:upper:]' '[:lower:]')"
     # replacement should be literal ${VAR} so later envsubst/perl expands it
     replacement='\${'"$pv"'}'
-    # add sed -e "s|<prometheus_port>|${PROMETHEUS_PORT}|g"
     sed_args+=( -e "s|<${lc}>|${replacement}|g" )
   done
 
@@ -407,4 +492,3 @@ if [[ $EXIT_CODE -ne 0 ]]; then
 fi
 
 info "Compose command finished successfully."
-info "Prometheus will scrape on path: ${CUSTOM_METRICS_PATH}"

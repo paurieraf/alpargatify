@@ -8,8 +8,8 @@ services:
     environment:
       - WUD_SERVER_PORT=2999
       - WUD_WATCHER_LOCAL_CRON=0 6 * * *
-      - WUD_AUTH_BASIC_MY_USER=${WUD_ADMIN_USER}
-      - WUD_AUTH_BASIC_MY_HASH=${WUD_ADMIN_PASSWORD}
+      - WUD_AUTH_BASIC_ADMIN_USER=${WUD_ADMIN_USER}
+      - WUD_AUTH_BASIC_ADMIN_HASH=${WUD_ADMIN_PASSWORD_HASH}
       # Compose triggers
       - WUD_TRIGGER_DOCKERCOMPOSE_CORE_FILE=/wud/docker-compose-core.yml
       - WUD_TRIGGER_DOCKERCOMPOSE_CORE_PRUNE=true
@@ -37,7 +37,8 @@ services:
       - navidrome
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:2999/ || exit 1"]
-      interval: 1m
+      test: curl --fail http://127.0.0.1:2999/health || exit 1
+      interval: 10s
       timeout: 10s
       retries: 3
+      start_period: 10s
