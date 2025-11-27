@@ -1,7 +1,7 @@
 ## Global options
 {   
     # Admin accesible only in this virtual network
-    admin caddy:2019
+    admin caddy-admin:2019
     # Enable per-host metrics
     metrics {
         per_host

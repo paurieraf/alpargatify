@@ -43,6 +43,7 @@ services:
       - ${VOLUMES_PATH}/prometheus:/prometheus
     networks:
       - navidrome
+      - caddy-with-admin
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --timeout=3 -O - http://127.0.0.1:9090/ || exit 1"]

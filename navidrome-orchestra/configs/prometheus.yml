@@ -34,4 +34,4 @@ scrape_configs:
   - job_name: 'caddy'
     metrics_path: /metrics  # Admin API must be enabled to edit I think 
     static_configs:
-      - targets: ['caddy:2019']
+      - targets: ['caddy-admin:2019']
