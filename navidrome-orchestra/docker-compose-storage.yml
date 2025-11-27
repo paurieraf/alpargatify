@@ -16,6 +16,7 @@ services:
 
   syncthing:
     image: syncthing/syncthing:2.0.11
+    profiles: ["extra-storage"]
     container_name: syncthing
     labels:
       - 'wud.tag.include=^\d+\.\d+\.\d+$'
@@ -49,6 +50,7 @@ services:
 
   filebrowser:
     image: filebrowser/filebrowser:v2.49.0
+    profiles: ["extra-storage"]
     container_name: filebrowser
     labels:
       - 'wud.tag.include=^v\d+\.\d+\.\d+$'

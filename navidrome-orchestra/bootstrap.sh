@@ -9,7 +9,34 @@
 # Modes:
 #   Default: bring services up (compose up -d)
 #   --down : stop services (compose down)
-
+#
+# Profiles (compose):
+#   By default the script will ENABLE all known profiles so profile-tagged services are started.
+#   Known profiles (as of this script): "extra-storage", "wud", "monitoring"
+#
+#   You can selectively DISABLE any of those profiles using flags:
+#     --no-wud             : disable the "wud" profile
+#     --no-extra-storage   : disable the "extra-storage" profile
+#     --no-monitoring      : disable the "monitoring" profile
+#
+#   Behavior:
+#     - Default behavior: all three profiles are enabled and any service in those profiles
+#       will be started.
+#     - If you pass e.g. --no-wud, no services that belong to the "wud" profile will be
+#       started. If you pass multiple --no-* flags, the corresponding profiles will be
+#       disabled (for example `--no-extra-storage --no-monitoring` will prevent any service
+#       in either "extra-storage" or "monitoring" from starting).
+#
+#   Implementation notes:
+#     - The script will pass --profile NAME to the compose up command for each enabled profile
+#       when the compose implementation supports it. If the compose binary does not support
+#       profiles, the script will warn and continue (services without profiles will still start).
+#
+# Examples:
+#   $(basename "$0")
+#   $(basename "$0") --down
+#   $(basename "$0") --no-wud --no-monitoring
+#
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -71,21 +98,32 @@ cleanup_tmpfiles() {
 trap cleanup_tmpfiles EXIT
 
 ###############################################################################
-# Parse args (only mode flags)
+# Parse args (only mode flags + profile disable flags)
 ###############################################################################
 MODE="up" # values: up (default), down
 
+# Profile enable flags (defaults: enabled)
+ENABLE_WUD=1
+ENABLE_EXTRA_STORAGE=1
+ENABLE_MONITORING=1
+
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--down] [-h|--help]
+Usage: $(basename "$0") [--down] [--no-wud] [--no-extra-storage] [--no-monitoring] [-h|--help]
 
 Modes:
   (default)         : bring services up (docker compose up -d)
   --down            : stop services (docker compose down)
 
+Profile control (defaults: all enabled):
+  --no-wud          : disable the "wud" profile (services in this profile will not be started)
+  --no-extra-storage: disable the "extra-storage" profile
+  --no-monitoring   : disable the "monitoring" profile
+
 Examples:
   $(basename "$0")
   $(basename "$0") --down
+  $(basename "$0") --no-wud --no-monitoring
 EOF
 }
 
@@ -93,6 +131,9 @@ POSITIONAL=()
 while (( "$#" )); do
   case "$1" in
     --down) MODE="down"; shift ;;
+    --no-wud) ENABLE_WUD=0; shift ;;
+    --no-extra-storage) ENABLE_EXTRA_STORAGE=0; shift ;;
+    --no-monitoring) ENABLE_MONITORING=0; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage; exit 2 ;;
@@ -124,18 +165,28 @@ set +a
 : "${DOMAIN:?"DOMAIN is not set in .env"}"
 : "${NAVIDROME_MUSIC_PATH:?"NAVIDROME_MUSIC_PATH is not set in .env"}"
 
-if [ -z "${GRAFANA_ADMIN_USER:-}" ] ||  [ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]; then
-  err "GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD must be set in .env. Exiting."
-  exit 3
-fi
 if [ -z "${SFTP_USER:-}" ] ||  [ -z "${SFTP_PASSWORD:-}" ]; then
   err "SFTP_USER and SFTP_PASSWORD must be set in .env. Exiting."
   exit 3
 fi
 
-# New required vars for WUD (as requested)
-if [ -z "${WUD_ADMIN_USER:-}" ] || [ -z "${WUD_ADMIN_PASSWORD:-}" ]; then
-  err "WUD_ADMIN_USER and WUD_ADMIN_PASSWORD must be set in .env. Exiting."
+if [ -z "${WUD_ADMIN_USER:-}" ] || [ -z "${WUD_ADMIN_PASSWORD:-}" ] && [ $ENABLE_WUD -eq 1 ]; then
+  warn "WUD_ADMIN_USER and WUD_ADMIN_PASSWORD must be set in .env. Exiting."
+  exit 3
+fi
+
+if [ -z "${GRAFANA_ADMIN_USER:-}" ] || [ -z "${GRAFANA_ADMIN_PASSWORD:-}" ] && [ $ENABLE_MONITORING -eq 1 ]; then
+  warn "GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD must be set in .env. Exiting."
+  exit 3
+fi
+
+if [ -z "${SYNCTHING_GUI_USER:-}" ] || [ -z "${SYNCTHING_GUI_PASSWORD:-}" ] && [ $ENABLE_EXTRA_STORAGE -eq 1 ]; then
+  warn "SYNCTHING_GUI_USER and SYNCTHING_GUI_PASSWORD must be set in .env. Exiting."
+  exit 3
+fi
+
+if [ -z "${FILEBROWSER_ADMIN_USER:-}" ] || [ -z "${FILEBROWSER_ADMIN_PASSWORD:-}" ] && [ $ENABLE_EXTRA_STORAGE -eq 1 ]; then
+  warn "GRAFANA_ADMIN_USER and GRAFANA_ADMIN_PASSWORD must be set in .env. Exiting."
   exit 3
 fi
 
@@ -191,6 +242,13 @@ for s in WUD_ADMIN_PASSWORD GRAFANA_ADMIN_PASSWORD SFTP_PASSWORD SYNCTHING_GUI_P
     echo "  - ${s}=<not set>"
   fi
 done
+
+# show profile enablement
+echo "Compose profiles (defaults: enabled):"
+printf "  - extra-storage: %s\n" "$( [[ $ENABLE_EXTRA_STORAGE -eq 1 ]] && echo "enabled" || echo "disabled" )"
+printf "  - wud          : %s\n" "$( [[ $ENABLE_WUD -eq 1 ]] && echo "enabled" || echo "disabled" )"
+printf "  - monitoring   : %s\n" "$( [[ $ENABLE_MONITORING -eq 1 ]] && echo "enabled" || echo "disabled" )"
+
 echo "======================================"
 echo
 
@@ -452,6 +510,21 @@ else
 fi
 info "Compose command wrapper is ready."
 
+# Check whether the compose implementation supports --profile for 'up'
+SUPPORTS_PROFILE=0
+if compose help up 2>&1 | grep -q -- '--profile'; then
+  SUPPORTS_PROFILE=1
+else
+  # try a generic help check if previous failed (some implementations differ)
+  if compose --help 2>&1 | grep -q -- '--profile'; then
+    SUPPORTS_PROFILE=1
+  fi
+fi
+
+if [[ $SUPPORTS_PROFILE -eq 0 ]]; then
+  warn "Compose implementation does not advertise '--profile' support; profile control flags will be ignored. Services without profiles will still start."
+fi
+
 ###############################################################################
 # Gather docker-compose files (we will NOT render them; pass original files)
 ###############################################################################
@@ -470,16 +543,40 @@ for f in "${compose_ymls[@]}"; do
 done
 
 ###############################################################################
+# Build profile args for 'compose up' when applicable
+# Default: enable all known profiles unless explicitly disabled by flags.
+###############################################################################
+PROFILE_ARGS=()
+if [[ $SUPPORTS_PROFILE -eq 1 ]]; then
+  if [[ $ENABLE_EXTRA_STORAGE -eq 1 ]]; then
+    PROFILE_ARGS+=( --profile extra-storage )
+  fi
+  if [[ $ENABLE_WUD -eq 1 ]]; then
+    PROFILE_ARGS+=( --profile wud )
+  fi
+  if [[ $ENABLE_MONITORING -eq 1 ]]; then
+    PROFILE_ARGS+=( --profile monitoring )
+  fi
+fi
+
+###############################################################################
 # Invoke compose with selected mode using original compose files
 ###############################################################################
 info "Invoking docker compose mode: ${MODE}"
 
 if [[ "$MODE" == "up" ]]; then
   # Force recreate so we make sure configuration stays correct
-  compose "${compose_args[@]}" up -d --force-recreate	--remove-orphans
+  # We include PROFILE_ARGS only for 'up' if supported; down doesn't need profiles
+  if [[ ${#PROFILE_ARGS[@]} -gt 0 ]]; then
+    info "Enabled compose profiles: $(printf '%s ' "${PROFILE_ARGS[@]}")"
+  else
+    info "No compose profiles will be passed (either disabled or unsupported)."
+  fi
+
+  compose "${compose_args[@]}" "${PROFILE_ARGS[@]:-}" up -d --force-recreate --remove-orphans
   EXIT_CODE=$?
 elif [[ "$MODE" == "down" ]]; then
-  compose "${compose_args[@]}" down --remove-orphans
+  compose "${compose_args[@]}" "${PROFILE_ARGS[@]:-}" down --remove-orphans
   EXIT_CODE=$?
 else
   err "Unknown MODE: $MODE"

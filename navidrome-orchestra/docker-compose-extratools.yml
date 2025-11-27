@@ -2,6 +2,7 @@ services:
 
   wud:
     image: getwud/wud:8.1.1
+    profiles: ["wud"]
     container_name: wud
     labels:
       wud.watch: false

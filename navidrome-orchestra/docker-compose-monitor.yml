@@ -2,6 +2,7 @@ services:
 
   grafana:
     image: grafana/grafana:12.3
+    profiles: ["monitoring"]
     container_name: grafana
     labels:
       - 'wud.tag.include=^\d+\.\d+$'
@@ -26,6 +27,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.7.3
+    profiles: ["monitoring"]
     container_name: prometheus
     labels:
       - 'wud.tag.include=^v\d+\.\d+\.\d+$'
@@ -54,6 +56,7 @@ services:
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.52.1
+    profiles: ["monitoring"]
     container_name: cadvisor
     labels:
       - 'wud.tag.include=^v\d+\.\d+\.\d+$'
@@ -76,6 +79,7 @@ services:
 
   node-exporter:
     image: prom/node-exporter:v1.10.2
+    profiles: ["monitoring"]
     container_name: node-exporter
     labels:
       - 'wud.tag.include=^v\d+\.\d+\.\d+$'
