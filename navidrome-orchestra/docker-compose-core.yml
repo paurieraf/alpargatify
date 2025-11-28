@@ -1,4 +1,5 @@
 services:
+
   navidrome:
     image: deluan/navidrome:0.58.5
     user: ${PUID}:${PGID}
@@ -28,10 +29,10 @@ services:
       retries: 3
 
   init-chown:
-    image: alpine:3.22
+    image: alpine:3.22.2
     container_name: init-chown
     labels:
-      - 'wud.tag.include=^\d+\.\d+\$'
+      - 'wud.tag.include=^\d+\.\d+\.\d+$'
     # run as root (default) and perform a safe chown only when /volumes and /music exists
     command: >
       sh -euxc '
