@@ -31,6 +31,7 @@ This setup is intended to run on a remote server (VPS or VM). It brings up a rob
 ## Required .env values (high level)
 - `DOMAIN`: your domain (used by Caddy and templates).
 - `NAVIDROME_MUSIC_PATH`: path to your music library on the host (absolute).
+- `NAVIDROME_PASSWORDENCRYPTIONKEY`: random string used to encrypt the passwords in the first Navidrome run. https://www.navidrome.org/docs/usage/security/#encrypted-passwords 
 - `SFTP_USER`, `SFTP_PASSWORD`: credentials for the `sftp` service.
 
 Optional but commonly required depending on enabled profiles:
