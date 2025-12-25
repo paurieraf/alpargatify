@@ -14,7 +14,9 @@
 .db*
 **/cache/
 **volumes/
+__pycache__/
 backgrounds/
+telegram-bot/data/
 
 # Environment files
 *.env
