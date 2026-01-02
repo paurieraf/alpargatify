@@ -34,6 +34,9 @@ import:
   quiet: yes                # Non-interactive mode; no prompts
   autotag: yes              # Auto-fetch metadata from MusicBrainz
   duplicate_action: remove  # Remove old item before importing duplicate
+  duplicate_keys:
+    album: [albumartist, album, year, albumdisambig]
+    item: [artist, title, year]
 
 # ----------------------------------------------------------------------------
 # MATCHING SETTINGS
@@ -65,6 +68,57 @@ item_fields:
   disc_folder: f"Disc {disc:02d}" if disctotal > 1 else ""
   disc_and_track: f"{disc:02d}.{track:02d}" if disctotal > 1 else f"{track:02d}"
 
+  formatted_albumartist: |
+    import unicodedata
+
+    def needs_transliteration(s):
+        for char in s:
+            if unicodedata.category(char).startswith('L'): # It's a letter
+                try:
+                    name = unicodedata.name(char)
+                    # If it's a letter but NOT Latin, we need transliteration
+                    if "LATIN" not in name:
+                        return True
+                except ValueError:
+                    continue
+        return False
+
+    def clean(s):
+        if not s:
+            return ""
+        # Normalize to NFD to separate combining marks (accents) from base characters
+        # This handles cases like 'á' vs 'a' + '´', very common on macOS
+        normalized = unicodedata.normalize('NFD', s)
+        # Filter out non-spacing marks (accents/Mn category)
+        cleaned = "".join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        # Remove common delimiters and lowercase for robust comparison
+        for char in " []()-._,_":
+            cleaned = cleaned.replace(char, "")
+        return cleaned.lower()
+
+    # If the name only contains Latin letters (even with accents/curly quotes),
+    # then we don't need the bracketed sort name.
+    if not needs_transliteration(albumartist):
+        return albumartist
+
+    # Get the transliterated name from sort fields
+    latin = albumartist_sort
+    # Small cleaning if the sort name is "Haino, Keiji" -> "Keiji Haino"
+    if "," in latin:
+        parts = latin.split(", ")
+        if len(parts) == 2:
+            latin = f"{parts[1]} {parts[0]}"
+    
+    # If normalized names are similar enough, avoid adding brackets
+    # This (cl == ca or cl in ca or ca in cl) handles Spanish names and Japanese/Latin mixes
+    # The sorted(list) comparison handles Western reordering like "First Last" vs "Last, First"
+    cl = clean(latin)
+    ca = clean(albumartist)
+    if cl == ca or cl in ca or ca in cl or sorted(list(cl)) == sorted(list(ca)):
+        return albumartist
+        
+    return f"{albumartist} [{latin}]"
+
 # ----------------------------------------------------------------------------
 # ALBUM TYPES
 # ----------------------------------------------------------------------------
@@ -82,14 +136,22 @@ albumtypes:
 # PATH FORMATS
 # ----------------------------------------------------------------------------
 paths:
-  # Albums: <AlbumArtist>/<AlbumArtist> - [<Year>]<Types> <Album>/<Disc?>/<Track>. <Artist> - <Title>
-  default: $albumartist/$albumartist - [$year]$atypes $album/$disc_folder/$disc_and_track. $artist - $title
-  
-  # Singles: Non-Album/<Artist>/<Title>
+  # Albums: <AlbumArtist>/<AlbumArtist> - [$year]$atypes $album %aunique{} [$albumdisambig]/$disc_folder/$disc_and_track. $artist - $title
+  default: $formatted_albumartist/$formatted_albumartist - [$year]$atypes $album%aunique{}%if{$albumdisambig, [$albumdisambig]}/$disc_folder/$disc_and_track. $artist - $title
+
+  # Singles: Non-Album/$artist/$title
   singleton: Non-Album/$artist/$title
-  
+
   # Compilations: Compilations/<Album>/<Track>. <Artist> - <Title>
-  comp: Compilations/$album%aunique{}/$track. $artist -$title
+  comp: Compilations/$album%aunique{}%if{$albumdisambig, [$albumdisambig]}/$track. $artist -$title
+
+# ----------------------------------------------------------------------------
+# AUNIQUE SETTINGS (Identity & Disambiguation)
+# ----------------------------------------------------------------------------
+aunique:
+  keys: albumartist album year albumdisambig
+  disambiguators: albumtype label catalognum
+  bracket: '[]'
 
 # ----------------------------------------------------------------------------
 # PERMITTED FILE EXTENSIONS
@@ -98,10 +160,9 @@ permitted_extensions:
   - mp3
   - m4a
   - aac
-  - mp4
-  - flac
-  - wav
+  - opus
   - ogg
+  - flac
 
 # ----------------------------------------------------------------------------
 # MUSICBRAINZ SETTINGS
@@ -143,11 +204,11 @@ fetchart:
   max_filesize: 1200000     # Max file size (~1.2 MB)
   enforce_ratio: 0.5%       # Accept approximately square images
   sources:
+    - filesystem            # Use original art in case there is
     - coverart: release     # Cover Art Archive by release ID
     - fanarttv
     - itunes
     - amazon
-    - filesystem
   store_source: no          # Do not store art source tag
   high_resolution: no       # Disable extremely high-res images
   deinterlace: no           # Keep progressive JPEGs

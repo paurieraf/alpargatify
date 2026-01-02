@@ -8,6 +8,8 @@ import string
 from typing import List, Dict, Optional, Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from secrets_loader import get_secret
 
@@ -31,6 +33,19 @@ class NavidromeClient:
         self._music_folder_name: str = os.environ.get("NAVIDROME_MUSIC_FOLDER", "Music Library")
         self._music_folder_id: Optional[str] = None
         self._scan_meta_file: str = '/app/data/scan_status.json'
+        
+        # Setup session with retries
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+        self.timeout = 30 # Default timeout in seconds
 
     def _get_auth_params(self) -> dict[str, str | None]:
         """
@@ -77,7 +92,7 @@ class NavidromeClient:
         logger.debug(f"Requesting {url} with params: {params}")
         
         try:
-            response = requests.get(url, params=full_params)
+            response = self.session.get(url, params=full_params, timeout=self.timeout)
             response.raise_for_status()
             
             logger.debug(f"Response status: {response.status_code}")
@@ -99,7 +114,7 @@ class NavidromeClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Error connecting to Navidrome: {e}")
-            return None
+            raise e
 
     def get_music_folder_id(self) -> Optional[str]:
         """
@@ -144,7 +159,14 @@ class NavidromeClient:
         """
         response = self._request('getAlbum', {'id': album_id})
         if response and 'album' in response:
-            return response['album']
+            album = response['album']
+            # Calculate total size in bytes for this album
+            total_size = 0
+            if 'song' in album:
+                for s in album['song']:
+                    total_size += s.get('size', 0)
+            album['total_size_bytes'] = total_size
+            return album
         return None
 
     def sync_library(self, force: bool = False) -> List[Dict[str, Any]]:
@@ -182,9 +204,23 @@ class NavidromeClient:
                         
                         if saved_status.get('count') == current_count and saved_status.get('lastScan') == last_scan:
                             if os.path.exists(cache_file):
-                                logger.info("Scan status unchanged and cache exists. Skipping full sync.")
                                 with open(cache_file, 'r') as f:
-                                    return json.load(f)
+                                    cached_data = json.load(f)
+                                
+                                # Check if cache entries are missing size metadata (migration check)
+                                needs_migration = False
+                                if cached_data:
+                                    # Heuristic: check first few albums
+                                    for alb in cached_data[:20]:
+                                        if 'total_size_bytes' not in alb:
+                                            needs_migration = True
+                                            break
+                                
+                                if not needs_migration:
+                                    logger.info("Scan status unchanged and cache exists. Skipping full sync.")
+                                    return cached_data
+                                else:
+                                    logger.info("Cache is missing size metadata. Triggering enrichment sync.")
                     
                     # Save current status for next time if we're about to sync
                     with open(self._scan_meta_file, 'w') as f:
@@ -271,7 +307,7 @@ class NavidromeClient:
                     except ValueError:
                         pass # Bad format, treat as expired
                 
-                if is_expired:
+                if is_expired or 'total_size_bytes' not in album:
                     expired_ids.add(aid)
         
         ids_to_fetch = new_ids.union(expired_ids)
@@ -631,9 +667,10 @@ class NavidromeClient:
             # Use cached library for counting
             all_albums = self.sync_library(force=False)
             
-            # Count unique artists
+            # Count unique artists and aggregate total size
             artists = set()
             total_songs = 0
+            total_size_bytes = 0
             
             for album in all_albums:
                 artist = album.get('artist')
@@ -642,11 +679,15 @@ class NavidromeClient:
                 
                 song_count = album.get('songCount', 0)
                 total_songs += song_count
+                
+                # total_size_bytes is calculated during enrichment in _fetch_album_details
+                total_size_bytes += album.get('total_size_bytes', 0)
             
             stats = {
                 'albums': len(all_albums),
                 'artists': len(artists),
-                'songs': total_songs
+                'songs': total_songs,
+                'size_bytes': total_size_bytes
             }
             
             logger.info(f"Server stats: {stats}")
