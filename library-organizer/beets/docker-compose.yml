@@ -14,5 +14,6 @@ services:
       - DRY_RUN=${DRY_RUN:-no}
       - IMPORT_MODE=${IMPORT_MODE:-full}
       - VERBOSE=${VERBOSE:-no}
+      - INTERACTIVE=${INTERACTIVE:-no}
     restart: "no"
     entrypoint: ["/entrypoint.sh"]

@@ -1,0 +1,263 @@
+# ============================================================================
+# BEETS CONFIGURATION
+# ============================================================================
+# Minimal beets configuration for containerized environments
+# The wrapper mounts your host config on /config.yaml
+#
+# Directory Structure:
+#   /<AlbumArtist>/
+#       <Artist> - (<Year>) <Album Title> [<Release Type>]/
+#           (if multi-disc) Disc <N>/
+#               <N>-<track_padded>. <Artist> - <Title>.<ext>
+#           (if single-disc)
+#               <track_padded>. <Artist> - <Title>.<ext>
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# CORE SETTINGS
+# ----------------------------------------------------------------------------
+directory: /data
+library: /data/library.db
+threaded: yes
+original_date: yes
+
+# ----------------------------------------------------------------------------
+# IMPORT SETTINGS
+# ----------------------------------------------------------------------------
+import:
+  move: yes                 # Move files from import folder into library
+  copy: no                  # Do not copy; only move
+  write: yes                # Write metadata tags to files after importing
+  singletons: no            # Do not treat single-track albums as standalone
+  resume: yes               # Resume interrupted imports
+  incremental: no           # Process everything, not just new files
+  quiet: no                 # Interactive mode
+  autotag: yes              # Auto-fetch metadata from MusicBrainz
+  duplicate_action: remove  # Remove old item before importing duplicate
+  duplicate_keys:
+    album: [albumartist, album, year, albumdisambig]
+    item: [artist, title, year]
+
+# ----------------------------------------------------------------------------
+# MATCHING SETTINGS
+# ----------------------------------------------------------------------------
+# Thresholds for matching candidate albums (0.0 = perfect, 1.0 = different)
+# Lower thresholds = stricter matching; higher = more permissive
+match:
+  strong_rec_thresh: 0.30   # Auto-accept strong matches
+  medium_rec_thresh: 0.50   # Medium matches (may need confirmation)
+
+# ----------------------------------------------------------------------------
+# PLUGINS
+# ----------------------------------------------------------------------------
+plugins:
+  - inline        # Define custom item fields
+  - albumtypes    # Detect and edit album types
+  - musicbrainz   # Extract MusicBrainz metadata
+  - scrub         # Clean up original metadata
+  - fromfilename  # Parse metadata from filenames as fallback
+  - lastgenre     # Guess genre from Last.fm tags
+  - fetchart      # Download album cover art
+  - embedart      # Embed cover art in audio files
+  - lyrics        # Fetch song lyrics
+  - info          # Display file metadata
+
+# ----------------------------------------------------------------------------
+# CUSTOM FIELDS
+# ----------------------------------------------------------------------------
+item_fields:
+  disc_folder: f"Disc {disc:02d}" if disctotal > 1 else ""
+  disc_and_track: f"{disc:02d}.{track:02d}" if disctotal > 1 else f"{track:02d}"
+
+  formatted_albumartist: |
+    import unicodedata
+
+    def needs_transliteration(s):
+        for char in s:
+            if unicodedata.category(char).startswith('L'): # It's a letter
+                try:
+                    name = unicodedata.name(char)
+                    # If it's a letter but NOT Latin, we need transliteration
+                    if "LATIN" not in name:
+                        return True
+                except ValueError:
+                    continue
+        return False
+
+    def clean(s):
+        if not s:
+            return ""
+        # Normalize to NFD to separate combining marks (accents) from base characters
+        # This handles cases like 'á' vs 'a' + '´', very common on macOS
+        normalized = unicodedata.normalize('NFD', s)
+        # Filter out non-spacing marks (accents/Mn category)
+        cleaned = "".join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        # Remove common delimiters and lowercase for robust comparison
+        for char in " []()-._,_":
+            cleaned = cleaned.replace(char, "")
+        return cleaned.lower()
+
+    # If the name only contains Latin letters (even with accents/curly quotes),
+    # then we don't need the bracketed sort name.
+    if not needs_transliteration(albumartist):
+        return albumartist
+
+    # Get the transliterated name from sort fields
+    latin = albumartist_sort
+    # Small cleaning if the sort name is "Haino, Keiji" -> "Keiji Haino"
+    if "," in latin:
+        parts = latin.split(", ")
+        if len(parts) == 2:
+            latin = f"{parts[1]} {parts[0]}"
+    
+    # If normalized names are similar enough, avoid adding brackets
+    # This (cl == ca or cl in ca or ca in cl) handles Spanish names and Japanese/Latin mixes
+    # The sorted(list) comparison handles Western reordering like "First Last" vs "Last, First"
+    cl = clean(latin)
+    ca = clean(albumartist)
+    if cl == ca or cl in ca or ca in cl or sorted(list(cl)) == sorted(list(ca)):
+        return albumartist
+        
+    return f"{albumartist} [{latin}]"
+
+album_fields:
+  formatted_albumartist: |
+    import unicodedata
+
+    def needs_transliteration(s):
+        for char in s:
+            if unicodedata.category(char).startswith('L'): # It's a letter
+                try:
+                    name = unicodedata.name(char)
+                    if "LATIN" not in name:
+                        return True
+                except ValueError:
+                    continue
+        return False
+
+    def clean(s):
+        if not s:
+            return ""
+        normalized = unicodedata.normalize('NFD', s)
+        cleaned = "".join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        for char in " []()-._,_":
+            cleaned = cleaned.replace(char, "")
+        return cleaned.lower()
+
+    if not needs_transliteration(albumartist):
+        return albumartist
+
+    latin = albumartist_sort
+    if "," in latin:
+        parts = latin.split(", ")
+        if len(parts) == 2:
+            latin = f"{parts[1]} {parts[0]}"
+    
+    cl = clean(latin)
+    ca = clean(albumartist)
+    if cl == ca or cl in ca or ca in cl or sorted(list(cl)) == sorted(list(ca)):
+        return albumartist
+        
+    return f"{albumartist} [{latin}]"
+
+
+# ----------------------------------------------------------------------------
+# ALBUM TYPES
+# ----------------------------------------------------------------------------
+albumtypes:
+  types:
+    - ep: 'EP'
+    - single: 'Single'
+    - soundtrack: 'OST'
+    - live: 'Live'
+    - compilation: 'Compilation'
+    - remix: 'Remix'
+  bracket: '[]'
+
+# ----------------------------------------------------------------------------
+# PATH FORMATS
+# ----------------------------------------------------------------------------
+paths:
+  # Albums: <AlbumArtist>/<AlbumArtist> - [$year]$atypes $album %aunique{} [$albumdisambig]/$disc_folder/$disc_and_track. $artist - $title
+  default: $formatted_albumartist/$formatted_albumartist - [$year]$atypes $album%aunique{}%if{$albumdisambig, [$albumdisambig]}/$disc_folder/$disc_and_track. $artist - $title
+
+  # Singles: Non-Album/$artist/$title
+  singleton: Non-Album/$artist/$title
+
+  # Compilations: Compilations/<Album>/<Track>. <Artist> - <Title>
+  comp: Compilations/$album%aunique{}%if{$albumdisambig, [$albumdisambig]}/$track. $artist -$title
+
+# ----------------------------------------------------------------------------
+# AUNIQUE SETTINGS (Identity & Disambiguation)
+# ----------------------------------------------------------------------------
+aunique:
+  keys: albumartist album year albumdisambig
+  disambiguators: albumtype label catalognum
+  bracket: '[]'
+
+# ----------------------------------------------------------------------------
+# PERMITTED FILE EXTENSIONS
+# ----------------------------------------------------------------------------
+permitted_extensions:
+  - mp3
+  - m4a
+  - aac
+  - opus
+  - ogg
+  - flac
+
+# ----------------------------------------------------------------------------
+# MUSICBRAINZ SETTINGS
+# ----------------------------------------------------------------------------
+musicbrainz:
+  extra_tags: [barcode, catalognum, country, label, media, year]
+  external_ids:
+    discogs: yes
+    spotify: yes
+    bandcamp: yes
+    beatport: yes
+    deezer: yes
+    tidal: yes
+
+# ----------------------------------------------------------------------------
+# GENRE SETTINGS
+# ----------------------------------------------------------------------------
+lastgenre:
+  force: yes                        # Force genre tagging
+  keep_existing: no                 # Replace existing genres
+  count: 5                          # Number of genres to fetch
+  whitelist: /genres-whitelist.txt  # Custom genre whitelist
+  canonical: /genres-tree.yaml      # Use tree for genre
+  prefer_specific: yes              # Prefer specific over general genres
+  min_weight: 20                    # Discard some genre
+
+# ----------------------------------------------------------------------------
+# ALBUM ART SETTINGS
+# ----------------------------------------------------------------------------
+art_filename: cover
+
+fetchart:
+  auto: yes                 # Fetch art automatically during import
+  cautious: yes             # Prefer trusted filenames
+  cover_names: cover front album folder art
+  minwidth: 500             # Minimum image width (px)
+  maxwidth: 1400            # Maximum image width (px)
+  quality: 75               # JPEG compression quality (1-100)
+  max_filesize: 1200000     # Max file size (~1.2 MB)
+  enforce_ratio: 0.5%       # Accept approximately square images
+  sources:
+    - filesystem            # Use original art in case there is
+    - coverart: release     # Cover Art Archive by release ID
+    - fanarttv
+    - itunes
+    - amazon
+  store_source: no          # Do not store art source tag
+  high_resolution: no       # Disable extremely high-res images
+  deinterlace: no           # Keep progressive JPEGs
+
+# ----------------------------------------------------------------------------
+# LYRICS SETTINGS
+# ----------------------------------------------------------------------------
+lyrics:
+  sources: [lrclib,]        # You can set Genius as fallback but you get banned after many requests
+  synced: yes               # Prefer synced/timestamped lyrics

@@ -174,20 +174,28 @@ execute_with_retry() {
     attempt=$((attempt+1))
     set +e
     
-    # Capture output to check for skippings while still showing it
-    local temp_output
-    temp_output=$(mktemp)
-    
-    # Run command, tee output to temp file and stdout
-    "${BEET_CMD[@]}" 2>&1 | tee "$temp_output"
-    exit_code=${PIPESTATUS[0]}
-    
-    # Check for "Skipping." in the output
-    if grep -q "Skipping." "$temp_output"; then
-      log "Detected skippings in beet output"
-      ALBUM_SKIPPED=1
+    if [ "${INTERACTIVE:-no}" = "yes" ]; then
+      # In interactive mode, we must not redirect stdout/stderr through tee,
+      # as it breaks the TTY output formatting and prompts.
+      "${BEET_CMD[@]}"
+      exit_code=$?
+      # Note: We rely on the user to observe any skipped albums in interactive mode.
+    else
+      # Capture output to check for skippings while still showing it
+      local temp_output
+      temp_output=$(mktemp)
+      
+      # Run command, tee output to temp file and stdout
+      "${BEET_CMD[@]}" 2>&1 | tee "$temp_output"
+      exit_code=${PIPESTATUS[0]}
+      
+      # Check for "Skipping." in the output
+      if grep -q "Skipping." "$temp_output"; then
+        log "Detected skippings in beet output"
+        ALBUM_SKIPPED=1
+      fi
+      rm -f "$temp_output"
     fi
-    rm -f "$temp_output"
     
     set -e
     

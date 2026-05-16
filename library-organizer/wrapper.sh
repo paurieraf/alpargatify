@@ -12,10 +12,11 @@
 #   --import-only          : skip conversion, run beets import (full)
 #   --order-only           : run beets to only move files into library (no autotag / no tag writes)
 #   --tag-only             : run beets to only autotag (write tags) but do not move/copy files
+#   --interactive          : run beets in interactive mode (attaches TTY and standard input)
 #   --verbose              : add debug logging
 #
 # Usage:
-#   ./wrapper.sh [--dry-run] [--beets-config /abs/path/to/beets-config.yaml] \
+#   ./wrapper.sh [--dry-run] [--interactive] [--beets-config /abs/path/to/beets-config.yaml] \
 #                [--convert-only|--import-only|--order-only|--tag-only] \
 #                /path/to/source /absolute/path/to/music_library_root
 
@@ -104,6 +105,7 @@ BEETS_CONFIG="$SCRIPT_DIR/beets/beets-config.yaml"
 
 # Dry-run mode: show actions without executing them
 DRY_RUN="no"
+INTERACTIVE="no"
 
 # Operation mode: full, convert-only, import-only, order-only, tag-only
 MODE="full"
@@ -118,12 +120,13 @@ VERBOSE="no"
 # Display usage information and exit
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--dry-run] [--beets-config /path/to/beets-config.yaml] \
+Usage: $(basename "$0") [--dry-run] [--interactive] [--beets-config /path/to/beets-config.yaml] \
        [--convert-only | --import-only | --order-only | --tag-only] \
        /path/to/source /absolute/path/to/music_library_root
 
 Modes (mutually exclusive):
  - (default) full         : convert -> beets import (move + autotag)
+ - --interactive          : run beets in interactive mode (attaches TTY and standard input)
  - --convert-only         : run converter only, then exit
  - --import-only          : skip conversion; run beets import (move + autotag)
  - --order-only           : run beets import but only move files into library (no autotag / no tag writes)
@@ -152,6 +155,7 @@ EOF
 POSITIONAL=()
 while (( "$#" )); do
   case "$1" in
+    --interactive) INTERACTIVE="yes"; shift ;;
     --dry-run) DRY_RUN="yes"; shift ;;
     --beets-config) BEETS_CONFIG="$2"; shift 2 ;;
     --convert-only) MODE="convert-only"; shift ;;
@@ -241,6 +245,7 @@ info "Music library root: $DEST"
 info "Converter:          $CONVERTER"
 info "Beets config:       $BEETS_CONFIG"
 info "Dry run:            $DRY_RUN"
+info "Interactive:        $INTERACTIVE"
 info "Mode:               $MODE"
 info "================"
 info ""
@@ -375,6 +380,7 @@ fi
 export BEETS_CONFIG="$BEETS_CONFIG"                               # Beets configuration file path
 export DRY_RUN="$DRY_RUN"                                         # Pass dry-run mode to container
 export IMPORT_MODE="$IMPORT_MODE"                                 # Beets import mode
+export INTERACTIVE="$INTERACTIVE"                                 # Beets interactive mode
 
 ###############################################################################
 # Docker Compose execution
@@ -407,8 +413,14 @@ else
 fi
 
 # Run compose with unique project name
-VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml up --build --abort-on-container-exit
-EXIT_CODE=$?
+if [ "$INTERACTIVE" = "yes" ]; then
+  # Use run --rm to allocate a TTY and attach stdin
+  VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml run --rm --build beets
+  EXIT_CODE=$?
+else
+  VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml up --build --abort-on-container-exit
+  EXIT_CODE=$?
+fi
 
 # Cleanup Docker resources (containers, networks, volumes)
 info "-> cleaning up docker resources"
