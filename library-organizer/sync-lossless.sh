@@ -150,7 +150,7 @@ if [ -z "$MAX_JOBS" ]; then
 fi
 
 if [ "$INTERACTIVE" = true ]; then
-    BEETS_CONFIG="$HOME/dev/workspace/alpargatify/library-organizer/beets-config-interactive.yaml"
+    BEETS_CONFIG="$HOME/dev/workspace/alpargatify/library-organizer/beets/beets-config-interactive.yaml"
 fi
 
 # --- 1. Music Organization (Beets) ---
