@@ -8,6 +8,7 @@ This small, focused pipeline converts lossless music files and imports them into
 **Important:** the bundled conversion script defaults to **Opus** at 256kbps. It also supports **AAC** via macOS's `afconvert` tool. For Opus conversion, you need **opus-tools** or **ffmpeg** installed.
 
 ## What this folder includes
+- `sync-lossless.sh`: the day-to-day entry point — imports an inbox of new FLAC into the lossless library, converts it to Opus, pushes both to the homeserver's SMB share and updates each library's beets DB. **See [`docs/sync-lossless.md`](docs/sync-lossless.md)** for usage, parameters and internals.
 - `flac-to-lossy.sh`: converter script (default: `.flac` -> `.opus` using **opusenc** or **ffmpeg**).
 - `wrapper.sh`: orchestrator that runs the converter into a temporary directory and then invokes a one-shot **Docker Compose** service which runs **beets** to import the converted files.
 - `parallel-wrapper.sh`: script to execute `wrapper.sh` in parallel for each immediate subdirectory of a given directory, allowing batch processing of multiple albums or collections.
