@@ -209,6 +209,27 @@ is_sqlite() {
     [ -s "$1" ] && [ "$(head -c 15 "$1" 2>/dev/null)" = "SQLite format 3" ]
 }
 
+# Records the DB's fingerprint at fetch time so push_db can tell whether beets
+# actually changed it. Kept outside the staging subdirs so rsync never ships it.
+db_mark() {
+    echo "$STAGING_BASE/$(basename "$1").dbmark"
+}
+
+# Content hash, NOT a timestamp: bash compares mtimes at one-second granularity,
+# so a DB written in the same second as the fetch would look untouched and its
+# push would be skipped, losing the import record.
+db_fingerprint() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        # No hasher: fall back to size, and say so — this can miss same-size edits.
+        warn "No shasum/sha256sum available; falling back to size comparison for the beets DB."
+        wc -c < "$1" | tr -d ' '
+    fi
+}
+
 # fetch_db <share_db> <staging_dir>
 fetch_db() {
     local src="$1" staging_dir="$2"
@@ -221,6 +242,7 @@ fetch_db() {
     fi
     info "Fetching beets DB: $src ($(du -h "$src" 2>/dev/null | cut -f1))"
     cp "$src" "$staging_dir/library.db" || error "Could not copy $src into staging."
+    db_fingerprint "$staging_dir/library.db" > "$(db_mark "$staging_dir")"
 }
 
 # push_db <staging_dir> <share_db>
@@ -234,16 +256,27 @@ push_db() {
         warn "Staged beets DB $staged looks corrupt — NOT pushing it to $dest."
         return 1
     fi
-    # Keep one generation back, and land the new DB via a temp name so an
-    # interrupted copy over SMB never leaves a half-written library.db.
-    if [ -f "$dest" ]; then
-        cp "$dest" "$dest.prev" || warn "Could not snapshot previous DB to $dest.prev"
+    # Nothing imported (or every album skipped) means beets never wrote to the
+    # DB, and writes to the share run at ~2.5 MB/s: skip a pointless 130MB push.
+    local mark
+    mark="$(db_mark "$1")"
+    if [ -f "$mark" ] && [ "$(db_fingerprint "$staged")" = "$(cat "$mark")" ]; then
+        info "Beets DB unchanged this run — skipping push to $dest."
+        return 0
     fi
-    if cp "$staged" "$dest.tmp" && mv -f "$dest.tmp" "$dest"; then
-        success "Beets DB updated: $dest"
-    else
-        warn "Failed to update beets DB at $dest (previous copy kept)."
+    # Land the new DB under a temp name first, then rotate: both mv's are
+    # server-side renames on the share (instant), so the only bytes crossing
+    # the wire are the new DB itself.
+    if ! cp "$staged" "$dest.tmp"; then
+        warn "Failed to copy the new beets DB to $dest.tmp (existing DB untouched)."
         rm -f "$dest.tmp"
+        return 1
+    fi
+    [ -f "$dest" ] && mv -f "$dest" "$dest.prev"
+    if mv -f "$dest.tmp" "$dest"; then
+        success "Beets DB updated: $dest (previous kept as $(basename "$dest").prev)"
+    else
+        warn "Failed to move the new beets DB into place at $dest."
         return 1
     fi
 }
