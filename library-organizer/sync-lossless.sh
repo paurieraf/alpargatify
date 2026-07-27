@@ -29,6 +29,14 @@ SMB_BASE="${SMB_BASE:-/Volumes/usb-hdd-wd-5tb/musicbucket}"
 SMB_LOSSLESS="${SMB_LOSSLESS:-$SMB_BASE/navidrome_library_flac}"
 SMB_LOSSY="${SMB_LOSSY:-$SMB_BASE/navidrome_library}"
 
+# Each library keeps its own beets DB next to its content. Since beets runs in a
+# container against the local staging dir, the DB has to be pulled in before the
+# import and pushed back after, or every run would start from an empty library
+# and lose duplicate detection. Paths inside these DBs are relative, so moving
+# them between the share and staging is safe.
+SMB_LOSSLESS_DB="$SMB_LOSSLESS/library.db"
+SMB_LOSSY_DB="$SMB_LOSSY/library.db"
+
 # --- Local staging (beets writes here; Docker on macOS can't mount SMB) ---
 STAGING_BASE="${STAGING_BASE:-$HOME/.alpargatify-staging}"
 LOSSLESS_ORGANIZED="$STAGING_BASE/flac"   # beets imports new FLAC here (local)
@@ -112,6 +120,9 @@ SOURCE_PATH: Required for organization flags. Path to the folder with new music
 Destinations (override with SMB_BASE / SMB_LOSSLESS / SMB_LOSSY):
   Lossless : $SMB_LOSSLESS
   Lossy    : $SMB_LOSSY
+Beets DBs (copied into staging before import, pushed back after; previous kept as *.prev):
+  $SMB_LOSSLESS_DB
+  $SMB_LOSSY_DB
 Local staging (auto, wiped each run): $STAGING_BASE
 EOF
     exit 0
@@ -191,9 +202,57 @@ cleanup_staging() {
     fi
 }
 
+# --- Beets library DB round-trip (share <-> staging) ---
+
+# Cheap sanity check: a beets DB must start with the SQLite magic string.
+is_sqlite() {
+    [ -s "$1" ] && [ "$(head -c 15 "$1" 2>/dev/null)" = "SQLite format 3" ]
+}
+
+# fetch_db <share_db> <staging_dir>
+fetch_db() {
+    local src="$1" staging_dir="$2"
+    if [ ! -f "$src" ]; then
+        warn "No beets DB at $src — starting a fresh one (no duplicate detection this run)."
+        return 0
+    fi
+    if ! is_sqlite "$src"; then
+        error "Beets DB at $src is not a valid SQLite file. Move it aside before running."
+    fi
+    info "Fetching beets DB: $src ($(du -h "$src" 2>/dev/null | cut -f1))"
+    cp "$src" "$staging_dir/library.db" || error "Could not copy $src into staging."
+}
+
+# push_db <staging_dir> <share_db>
+push_db() {
+    local staged="$1/library.db" dest="$2"
+    if [ ! -f "$staged" ]; then
+        warn "No beets DB in staging ($staged) — nothing to push back to $dest."
+        return 0
+    fi
+    if ! is_sqlite "$staged"; then
+        warn "Staged beets DB $staged looks corrupt — NOT pushing it to $dest."
+        return 1
+    fi
+    # Keep one generation back, and land the new DB via a temp name so an
+    # interrupted copy over SMB never leaves a half-written library.db.
+    if [ -f "$dest" ]; then
+        cp "$dest" "$dest.prev" || warn "Could not snapshot previous DB to $dest.prev"
+    fi
+    if cp "$staged" "$dest.tmp" && mv -f "$dest.tmp" "$dest"; then
+        success "Beets DB updated: $dest"
+    else
+        warn "Failed to update beets DB at $dest (previous copy kept)."
+        rm -f "$dest.tmp"
+        return 1
+    fi
+}
+
 if [ "$ORG_MUSIC" = true ]; then
     preflight_smb
     setup_staging
+    fetch_db "$SMB_LOSSLESS_DB" "$LOSSLESS_ORGANIZED"
+    fetch_db "$SMB_LOSSY_DB" "$LOSSY_PATH"
 fi
 
 # --- 1. Music Organization (Beets) into local staging ---
@@ -273,6 +332,9 @@ if [ "$ORG_MUSIC" = true ]; then
         wait
     fi
     info "Organization phase completed."
+
+    # FLAC imports are done, so the lossless DB is final: push it back now.
+    push_db "$LOSSLESS_ORGANIZED" "$SMB_LOSSLESS_DB" || true
 fi
 
 # --- 2. Convert to lossy (local staging) + push everything to SMB ---
@@ -283,7 +345,8 @@ run_parallel_tasks() {
 
     # 2.1 Push newly organized FLAC (staging) to SMB library, in background.
     #     library.db is beets-internal and staging-only; never push it.
-    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSLESS_ORGANIZED" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+    # -type d: library.db always sits in staging now, so only albums count as work.
+    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSLESS_ORGANIZED" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
         info "Pushing organized FLAC to SMB library in background..."
         info "  -> Log: $push_flac_log"
         rsync -a --exclude='library.db' --exclude='beets-config.yaml' \
@@ -334,13 +397,18 @@ run_parallel_tasks() {
         wait "$conv_pid" && success "Lossy conversion completed." || warn "Lossy conversion finished with errors (check $conv_log)."
     fi
 
+    # Conversion is done, so the lossy DB is final: push it back.
+    if [ "$ORG_MUSIC" = true ]; then
+        push_db "$LOSSY_PATH" "$SMB_LOSSY_DB" || true
+    fi
+
     # Wait for the FLAC push to SMB
     if [ -n "$push_flac_pid" ]; then
         wait "$push_flac_pid" && success "FLAC pushed to SMB." || warn "FLAC push finished with errors (check $push_flac_log)."
     fi
 
     # 2.3 Push lossy (staging) to SMB library
-    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
         info "Pushing lossy (Opus) to SMB library..."
         rsync -a --exclude='library.db' --exclude='beets-config.yaml' \
             "$LOSSY_PATH/" "$SMB_LOSSY/" && success "Lossy pushed to SMB." \
