@@ -4,18 +4,36 @@
 # sync-lossless.sh
 # ============================================================================
 # Automates the organization of new FLAC files using beets,
-# synchronizes the organized library to an external HDD,
-# and converts the library to Opus format in parallel.
+# synchronizes the organized library to the SMB share (PVE server),
+# and converts the library to Opus format.
+#
+# NOTE (macOS + SMB): Docker Desktop cannot bind-mount SMB network shares.
+# The beets container therefore writes to a LOCAL staging directory, and we
+# rsync the results to the SMB share afterwards. Only the albums imported in
+# the current run pass through staging (it is wiped each run), so we never
+# re-convert the whole library.
 # ============================================================================
 
 set -e
 echo "DEBUG-RUN: script started with args: $*"
-echo "DEBUG-RUN: FORCE_HIGH_RES initial: $FORCE_HIGH_RES"
-# --- Configuration paths ---
+echo "DEBUG-RUN: FORCE_HIGH_RES initial: ${FORCE_HIGH_RES:-}"
+
 FORCE_HIGH_RES=false
-HDD_PATH="/Volumes/SSD WD Black 4TB Pau/Music/MusicBucket/Navidrome Library FLAC Backup"
-LOSSLESS_ORGANIZED="/Volumes/SSD WD Black 4TB Pau/Music/MusicBucket/Navidrome Library FLAC"  # Temp dir is necessary. Otherwise, all opus files are converted to FLAC every time
-LOSSY_PATH="/Volumes/SSD WD Black 4TB Pau/Music/MusicBucket/Navidrome Library"
+
+# --- Final destinations (SMB share, PVE server) ---
+# Single tree per format: navidrome_library is what Navidrome serves (LXC 111
+# bind-mounts it), navidrome_library_flac is the lossless archive. There is no
+# second on-disk FLAC copy — a backup on the same disk is not a backup; the
+# off-disk copy is handled by the host's rclone jobs.
+SMB_BASE="${SMB_BASE:-/Volumes/usb-hdd-wd-5tb/musicbucket}"
+SMB_LOSSLESS="${SMB_LOSSLESS:-$SMB_BASE/navidrome_library_flac}"
+SMB_LOSSY="${SMB_LOSSY:-$SMB_BASE/navidrome_library}"
+
+# --- Local staging (beets writes here; Docker on macOS can't mount SMB) ---
+STAGING_BASE="${STAGING_BASE:-$HOME/.alpargatify-staging}"
+LOSSLESS_ORGANIZED="$STAGING_BASE/flac"   # beets imports new FLAC here (local)
+LOSSY_PATH="$STAGING_BASE/lossy"          # beets converts to Opus here (local)
+
 BEETS_CONFIG="$HOME/dev/workspace/alpargatify/library-organizer/beets/beets-config.yaml"
 PARALLEL_WRAPPER="$HOME/dev/workspace/alpargatify/library-organizer/parallel-wrapper.sh"
 WRAPPER_SCRIPT="$(dirname "$PARALLEL_WRAPPER")/wrapper.sh"
@@ -82,22 +100,25 @@ Usage: $(basename "$0") [FLAGS] [SOURCE_PATH]
 
 Flags:
   -i, --interactive      Run the process interactively (prompts for beets tag matching).
-  -o, --organize-only    Organize music (lossless and lossy) only.
-  -s, --sync-hdd-only    Sync organized lossless music to external HDD only.
-  -f, --full-sync        Organize music and sync to HDD (includes conversion to lossy).
+  -o, --organize-only    Organize music (lossless and lossy) and push to the SMB share.
+  -f, --full-sync        Alias of --organize-only (kept for muscle memory).
   -F, --force-high-res   Process folders even if they exceed quality limits (> 24/48).
   -j, --max-jobs N       Set maximum number of parallel jobs (default: auto).
   -h, --help             Show this help message.
 
-SOURCE_PATH: Required for organization flags. Path to the folder with new music.
+SOURCE_PATH: Required for organization flags. Path to the folder with new music
+             (a parent/inbox folder containing album subfolders).
+
+Destinations (override with SMB_BASE / SMB_LOSSLESS / SMB_LOSSY):
+  Lossless : $SMB_LOSSLESS
+  Lossy    : $SMB_LOSSY
+Local staging (auto, wiped each run): $STAGING_BASE
 EOF
     exit 0
 }
 
 # --- Argument parsing ---
 ORG_MUSIC=false
-SYNC_HDD=false
-FULL_SYNC=false
 INTERACTIVE=false
 SOURCE_PATH=""
 MAX_JOBS=""
@@ -108,8 +129,7 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         -i|--interactive)   INTERACTIVE=true; shift ;;
         -o|--organize-only) ORG_MUSIC=true; shift ;;
-        -s|--sync-hdd-only) SYNC_HDD=true; shift ;;
-        -f|--full-sync)     FULL_SYNC=true; shift ;;
+        -f|--full-sync)     ORG_MUSIC=true; shift ;;
         -F|--force-high-res) FORCE_HIGH_RES=true; shift ;;
         -j|--max-jobs)      MAX_JOBS="$2"; shift 2 ;;
         -h|--help)          usage ;;
@@ -123,12 +143,6 @@ while [[ "$#" -gt 0 ]]; do
             ;;
     esac
 done
-
-# If full sync, set both flags
-if [ "$FULL_SYNC" = true ]; then
-    ORG_MUSIC=true
-    SYNC_HDD=true
-fi
 
 # Validation
 if [ "$ORG_MUSIC" = true ] && [ -z "$SOURCE_PATH" ]; then
@@ -153,17 +167,46 @@ if [ "$INTERACTIVE" = true ]; then
     BEETS_CONFIG="$HOME/dev/workspace/alpargatify/library-organizer/beets/beets-config-interactive.yaml"
 fi
 
-# --- 1. Music Organization (Beets) ---
+# --- Preflight: SMB share must be mounted before we start importing ---
+preflight_smb() {
+    local missing=""
+    [ -d "$SMB_LOSSLESS" ] || missing="$missing\n  - $SMB_LOSSLESS"
+    [ -d "$SMB_LOSSY" ]    || missing="$missing\n  - $SMB_LOSSY"
+    if [ -n "$missing" ]; then
+        error "SMB destination(s) not reachable. Mount the share first, then retry:$missing"
+    fi
+}
+
+# --- Staging setup (local, wiped each run) ---
+setup_staging() {
+    info "Preparing local staging: $STAGING_BASE"
+    rm -rf "$STAGING_BASE"
+    mkdir -p "$LOSSLESS_ORGANIZED" "$LOSSY_PATH"
+}
+
+cleanup_staging() {
+    if [ -d "$STAGING_BASE" ]; then
+        info "Cleaning local staging: $STAGING_BASE"
+        rm -rf "$STAGING_BASE"
+    fi
+}
+
+if [ "$ORG_MUSIC" = true ]; then
+    preflight_smb
+    setup_staging
+fi
+
+# --- 1. Music Organization (Beets) into local staging ---
 if [ "$ORG_MUSIC" = true ]; then
     info "Starting music organization from $SOURCE_PATH..."
     info "Max parallel jobs: $MAX_JOBS"
+    info "Staging (lossless): $LOSSLESS_ORGANIZED"
     echo "DEBUG-RUN: FORCE_HIGH_RES is $FORCE_HIGH_RES"
 
     if [ ! -x "$WRAPPER_SCRIPT" ]; then
         error "Wrapper script not found or not executable at $WRAPPER_SCRIPT"
     fi
 
-    # Function to run the job (exported not needed if we use simple background loop)
     # We iterate and run in background
     RUNNING_JOBS=()
 
@@ -232,36 +275,29 @@ if [ "$ORG_MUSIC" = true ]; then
     info "Organization phase completed."
 fi
 
-# --- 2. Parallel Actions (HDD Sync and Lossy Conversion) ---
+# --- 2. Convert to lossy (local staging) + push everything to SMB ---
 run_parallel_tasks() {
-    local sync_pid=""
-    local conv_pid=""
-    local sync_log="/tmp/sync_hdd.log"
     local conv_log="/tmp/lossy_conv.log"
+    local push_flac_log="/tmp/push_flac.log"
+    local push_flac_pid=""
 
-    # 2.1 Sync to HDD
-    if [ "$SYNC_HDD" = true ]; then
-        if [ ! -d "$HDD_PATH" ]; then
-            warn "External HDD not found at $HDD_PATH. Skipping HDD sync."
-        else
-            info "Starting HDD sync in background..."
-            info "  -> Log: $sync_log"
-            rsync -av --progress --ignore-existing \
-                --exclude='library.db' \
-                --exclude='beets-config.yaml' \
-                "$LOSSLESS_ORGANIZED/" "$HDD_PATH/" > "$sync_log" 2>&1 &
-            sync_pid=$!
-        fi
+    # 2.1 Push newly organized FLAC (staging) to SMB library, in background.
+    #     library.db is beets-internal and staging-only; never push it.
+    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSLESS_ORGANIZED" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+        info "Pushing organized FLAC to SMB library in background..."
+        info "  -> Log: $push_flac_log"
+        rsync -a --exclude='library.db' --exclude='beets-config.yaml' \
+            "$LOSSLESS_ORGANIZED/" "$SMB_LOSSLESS/" > "$push_flac_log" 2>&1 &
+        push_flac_pid=$!
     fi
 
-    # 2.2 Conversion to Lossy (OPUS)
-    # This also runs if we are just organizing music (user: "en lossless y lossy")
+    # 2.2 Conversion to Lossy (OPUS): staging LOSSLESS -> staging LOSSY
     if [ "$ORG_MUSIC" = true ]; then
         if [ "$INTERACTIVE" = true ]; then
             info "Starting lossy conversion in foreground (interactive)..."
             for item in "$LOSSLESS_ORGANIZED"/*/; do
                 [ -d "$item" ] || continue
-                # Check if it has subfolders (collections)
+                # Check if it has subfolders (collections / artist dirs)
                 if [ -n "$(find "$item" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]; then
                     info "Processing collection (sequential for interactive): $(basename "$item")"
                     for subitem in "$item"/*/; do
@@ -279,7 +315,7 @@ run_parallel_tasks() {
             (
                 for item in "$LOSSLESS_ORGANIZED"/*/; do
                     [ -d "$item" ] || continue
-                    # Check if it has subfolders (collections)
+                    # Check if it has subfolders (collections / artist dirs)
                     if [ -n "$(find "$item" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]; then
                         info "Processing collection (parallel): $(basename "$item")"
                         bash "$PARALLEL_WRAPPER" --max-jobs "$MAX_JOBS" "$item" "$LOSSY_PATH"
@@ -293,22 +329,34 @@ run_parallel_tasks() {
         fi
     fi
 
-    # Wait for both to finish
-    if [ -n "$sync_pid" ]; then
-        wait "$sync_pid" && success "HDD Sync completed." || warn "HDD Sync finished with errors (check $sync_log)."
-    fi
-    if [ -n "$conv_pid" ] && [ "$INTERACTIVE" = false ]; then
+    # Wait for conversion (background mode)
+    if [ "$INTERACTIVE" = false ] && [ -n "${conv_pid:-}" ]; then
         wait "$conv_pid" && success "Lossy conversion completed." || warn "Lossy conversion finished with errors (check $conv_log)."
     fi
+
+    # Wait for the FLAC push to SMB
+    if [ -n "$push_flac_pid" ]; then
+        wait "$push_flac_pid" && success "FLAC pushed to SMB." || warn "FLAC push finished with errors (check $push_flac_log)."
+    fi
+
+    # 2.3 Push lossy (staging) to SMB library
+    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+        info "Pushing lossy (Opus) to SMB library..."
+        rsync -a --exclude='library.db' --exclude='beets-config.yaml' \
+            "$LOSSY_PATH/" "$SMB_LOSSY/" && success "Lossy pushed to SMB." \
+            || warn "Lossy push finished with errors."
+    fi
+
 }
 
-# Run parallel tasks if needed
-if [ "$SYNC_HDD" = true ] || [ "$ORG_MUSIC" = true ]; then
-    # We only run parallel actions if something needs to be done.
-    # Note: If only --sync-hdd-only was passed, ORG_MUSIC is false, so it just syncs.
+# Run tasks if needed
+if [ "$ORG_MUSIC" = true ]; then
     run_parallel_tasks
 fi
 
+# Clean staging on success
+if [ "$ORG_MUSIC" = true ]; then
+    cleanup_staging
+fi
+
 success "All tasks finished!"
-
-
