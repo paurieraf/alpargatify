@@ -8,10 +8,17 @@
 # and converts the library to Opus format.
 #
 # NOTE (macOS + SMB): Docker Desktop cannot bind-mount SMB network shares.
-# The beets container therefore writes to a LOCAL staging directory, and we
-# rsync the results to the SMB share afterwards. Only the albums imported in
-# the current run pass through staging (it is wiped each run), so we never
-# re-convert the whole library.
+# This cuts BOTH ways, because the beets container mounts an import folder and
+# an output folder:
+#   - output: the container writes to a LOCAL staging directory and we rsync the
+#     results to the share afterwards. Only the albums imported in the current
+#     run pass through staging (it is wiped each run), so we never re-convert
+#     the whole library.
+#   - input: an album sitting on the share cannot be mounted either — Docker
+#     fails with "error while creating mount source path ...: file exists". So
+#     when SOURCE_PATH is on a network mount, each album is copied into local
+#     staging first and imported from there (see import_album/is_network_path).
+#     One album at a time, so peak local disk stays at roughly one album.
 # ============================================================================
 
 set -e
@@ -281,9 +288,56 @@ push_db() {
     fi
 }
 
+# --- Source localisation (Docker cannot bind-mount SMB paths) ---
+# The beets container mounts the import folder, and Docker Desktop refuses a
+# mount source on an SMB share ("mkdir /host_mnt/Volumes/...: file exists").
+# When the inbox lives on the share, each album is copied to local staging and
+# imported from there. Copies are per album, so peak local disk stays bounded.
+is_network_path() {
+    local src
+    src=$(df -P "$1" 2>/dev/null | awk 'NR==2{print $1}')
+    case "$src" in
+        //*|*:/*) return 0 ;;   # //host/share (SMB) or host:/export (NFS)
+        *) return 1 ;;
+    esac
+}
+
+# import_album <album_dir>  — localises when needed, then hands off to wrapper.sh
+import_album() {
+    local src_dir="$1" work_dir="$1" local_copy="" rc=0
+    if [ "$SOURCE_IS_REMOTE" = true ]; then
+        local_copy="$INBOX_STAGING/$(basename "$src_dir")"
+        rm -rf "$local_copy"
+        if ! cp -R "$src_dir" "$local_copy"; then
+            warn "Could not copy $(basename "$src_dir") to local staging."
+            rm -rf "$local_copy"
+            return 1
+        fi
+        work_dir="$local_copy"
+    fi
+    if [ "$INTERACTIVE" = true ]; then
+        bash "$WRAPPER_SCRIPT" --interactive --beets-config "$BEETS_CONFIG" \
+            --import-only "$work_dir" "$LOSSLESS_ORGANIZED" || rc=$?
+    else
+        bash "$WRAPPER_SCRIPT" --beets-config "$BEETS_CONFIG" \
+            --import-only "$work_dir" "$LOSSLESS_ORGANIZED" || rc=$?
+    fi
+    # beets moved the audio out of the copy; drop whatever is left either way.
+    [ -n "$local_copy" ] && rm -rf "$local_copy"
+    return "$rc"
+}
+
+SOURCE_IS_REMOTE=false
+INBOX_STAGING="$STAGING_BASE/inbox"
+
 if [ "$ORG_MUSIC" = true ]; then
     preflight_smb
     setup_staging
+    mkdir -p "$INBOX_STAGING"
+    if is_network_path "$SOURCE_PATH"; then
+        SOURCE_IS_REMOTE=true
+        info "Source is on a network share: albums are copied to local staging first (Docker cannot mount SMB paths)."
+    fi
     fetch_db "$SMB_LOSSLESS_DB" "$LOSSLESS_ORGANIZED"
     fetch_db "$SMB_LOSSY_DB" "$LOSSY_PATH"
 fi
@@ -341,7 +395,7 @@ if [ "$ORG_MUSIC" = true ]; then
 
         if [ "$INTERACTIVE" = true ]; then
             info "  -> Interactive mode (foreground)"
-            if bash "$WRAPPER_SCRIPT" --interactive --beets-config "$BEETS_CONFIG" --import-only "$dir" "$LOSSLESS_ORGANIZED"; then
+            if import_album "$dir"; then
                 success "Organized $folder_name successfully. Deleting source."
                 rm -rf "$dir"
             else
@@ -350,7 +404,7 @@ if [ "$ORG_MUSIC" = true ]; then
         else
             info "  -> Log: $log_file"
             (
-                if bash "$WRAPPER_SCRIPT" --beets-config "$BEETS_CONFIG" --import-only "$dir" "$LOSSLESS_ORGANIZED" > "$log_file" 2>&1; then
+                if import_album "$dir" > "$log_file" 2>&1; then
                     success "Organized $folder_name successfully. Deleting source."
                     rm -rf "$dir"
                 else
