@@ -33,7 +33,12 @@ import:
   incremental: no           # Process everything, not just new files
   quiet: yes                # Non-interactive mode; no prompts
   autotag: yes              # Auto-fetch metadata from MusicBrainz
-  duplicate_action: remove  # Remove old item before importing duplicate
+  duplicate_action: skip    # Keep the existing album, skip the incoming duplicate.
+                            # NOT "remove": beets runs against a local staging dir
+                            # and the real library lives on the SMB share, so it
+                            # cannot delete a duplicate's files — it would only drop
+                            # the DB row and let the re-import land beside the
+                            # original under a disambiguated "[NNNN]" folder.
   duplicate_keys:
     album: [albumartist, album, year, albumdisambig]
     item: [artist, title, year]
