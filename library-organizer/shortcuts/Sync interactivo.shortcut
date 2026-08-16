@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>WFWorkflowActions</key>
+    <array>
+        <dict>
+            <key>WFWorkflowActionIdentifier</key>
+            <string>is.workflow.actions.runshellscript</string>
+            <key>WFWorkflowActionParameters</key>
+            <dict>
+                <key>UUID</key>
+                <string>A9C5E3B1-7D4F-4A2E-9C8B-6F1E0D2C4B5A</string>
+                <key>Shell</key>
+                <string>/bin/zsh</string>
+                <key>InputMode</key>
+                <string>Arguments</string>
+                <key>Input</key>
+                <dict>
+                    <key>Value</key>
+                    <dict>
+                        <key>Type</key>
+                        <string>ExtensionInput</string>
+                    </dict>
+                    <key>WFSerializationType</key>
+                    <string>WFTextTokenAttachment</string>
+                </dict>
+                <key>Script</key>
+                <string>SCRIPT="$HOME/dev/workspace/alpargatify/library-organizer/sync-lossless.sh"
+DEFAULT_INBOX="/Volumes/usb-hdd-wd-5tb/musicbucket/navidrome_inbox"
+
+# Accept input either as arguments or via stdin (one path per line)
+args=("$@")
+if [ ${#args[@]} -eq 0 ]; then
+  while IFS= read -r line; do [ -n "$line" ] &amp;&amp; args+=("$line"); done
+fi
+
+# Fallback: default inbox folder
+if [ ${#args[@]} -eq 0 ]; then
+  if [ -d "$DEFAULT_INBOX" ]; then
+    args+=("$DEFAULT_INBOX")
+  else
+    echo "No input folder received and default inbox not found: $DEFAULT_INBOX" &gt;&amp;2
+    exit 1
+  fi
+fi
+
+launcher="/tmp/sync-interactivo-$$.command"
+{
+  echo '#!/bin/zsh'
+  echo 'echo "=== Sync interactivo (sync-lossless -i -o -j 1) ==="'
+  for SRC in "${args[@]}"; do
+    SRC="${SRC%/}"
+    printf 'echo "\n&gt;&gt;&gt; %q"\n' "$SRC"
+    printf '%q -i -o -j 1 %q\n' "$SCRIPT" "$SRC"
+  done
+  echo 'echo "\n=== ALL DONE ==="'
+  echo 'read "?Press Return to close..."'
+} &gt; "$launcher"
+chmod +x "$launcher"
+open "$launcher"</string>
+            </dict>
+        </dict>
+    </array>
+    <key>WFWorkflowClientVersion</key>
+    <string>2700.0.4</string>
+    <key>WFWorkflowHasOutputFallback</key>
+    <false/>
+    <key>WFWorkflowHasShortcutInputVariables</key>
+    <true/>
+    <key>WFWorkflowIcon</key>
+    <dict>
+        <key>WFWorkflowIconGlyphNumber</key>
+        <integer>59478</integer>
+        <key>WFWorkflowIconStartColor</key>
+        <integer>4292063482</integer>
+    </dict>
+    <key>WFWorkflowImportQuestions</key>
+    <array/>
+    <key>WFWorkflowInputContentItemClasses</key>
+    <array>
+        <string>WFFolderContentItem</string>
+        <string>WFGenericFileContentItem</string>
+    </array>
+    <key>WFWorkflowMinimumClientVersion</key>
+    <integer>900</integer>
+    <key>WFWorkflowMinimumClientVersionString</key>
+    <string>900</string>
+    <key>WFWorkflowName</key>
+    <string>Sync interactivo</string>
+    <key>WFWorkflowOutputContentItemClasses</key>
+    <array/>
+    <key>WFWorkflowTypes</key>
+    <array>
+        <string>ActionExtension</string>
+    </array>
+</dict>
+</plist>
