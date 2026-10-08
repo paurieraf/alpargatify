@@ -113,7 +113,8 @@ else
 fi
 echo "Inbox:  $(count_albums "$INBOX") album(s) waiting"
 echo "Failed: $(count_albums "$FAILED") album(s) (details: status.sh failed)"
-lossy_lists=$(ls "$FAILED"/lossy-missing-*.list 2>/dev/null | wc -l | tr -d ' ')
+# find, not ls: with pipefail a no-match ls fails the pipeline and set -e exits.
+lossy_lists=$(find "$FAILED" -maxdepth 1 -name 'lossy-missing-*.list' 2>/dev/null | wc -l | tr -d ' ')
 [ "$lossy_lists" -eq 0 ] || echo "Opus:   $lossy_lists list(s) of FLAC albums without Opus copy (status.sh failed)"
 
 if [ -f "$latest" ]; then
