@@ -4,6 +4,9 @@ services:
       context: .
     image: local/beets:latest
     container_name: "beets-${PROJECT_NAME}"
+    # 1000 = the image's "beets" user. The server sets BEETS_UID/GID=0 so files
+    # land as the unprivileged LXC's root (100000 on the Proxmox host).
+    user: "${BEETS_UID:-1000}:${BEETS_GID:-1000}"
     volumes:
       - "${DEST_PATH}:/data:rw"
       - "${IMPORT_SRC}:/import:rw"

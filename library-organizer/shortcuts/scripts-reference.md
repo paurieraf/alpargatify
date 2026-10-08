@@ -19,6 +19,8 @@ Rutas (definidas dentro de `sync-lossless.sh`, override con `SMB_BASE`/`SMB_LOSS
 - Backup: no hay copia FLAC adicional en disco — la maneja rclone en el host PVE.
 
 OJO: sync-lossless BORRA (rm -rf) cada subcarpeta fuente tras organizar OK. Comportamiento normal (vacía el inbox).
+Si beets no importa el álbum (Skip interactivo, duplicado, sin match, error) la carpeta se MUEVE a
+`navidrome_inbox_pending/` en vez de borrarse.
 
 ---
 
@@ -152,3 +154,24 @@ Estos modos quedan cubiertos por los shortcuts 1 y 2 de arriba:
 - Convertir + importar a lossy     → `Sync completo`
 - Procesar varios álbumes a la vez → `Sync completo` (usa `-j` internamente, parallel-wrapper)
 - Matching manual de beets         → `Sync interactivo`
+
+---
+
+## iOS — ejecución en el server (LXC 101) por SSH
+
+Ficheros en `shortcuts/ios/` (generados con `build.py`, firmados con `sign.sh`). Usan la acción
+**Ejecutar script por SSH** contra `root@10.1.1.101` (alcanzable vía Tailscale, subnet router LXC 104).
+También aparecen en el Mac vía iCloud: sirven de "Sync server" sin Docker Desktop ni SMB.
+
+| Shortcut | Comando remoto |
+|---|---|
+| Mou a inbox | `server/inbox.sh list` → elegir (multi) → `server/inbox.sh move -` (nombres por stdin) |
+| Sync server | `server/sync.sh auto` (tmux en segundo plano, vuelve al instante) |
+| Estat sync | `server/status.sh` |
+
+Primera importación: abrir cada acción SSH → Autenticación **Clave SSH** → copiar la clave pública
+y añadirla a `/root/.ssh/authorized_keys` de LXC 101 (todas las acciones del dispositivo comparten clave).
+
+Interactivo desde el móvil: app SSH (Termius/Blink) → `ssh root@10.1.1.101` →
+`/opt/alpargatify/library-organizer/server/sync.sh interactive`. Si se corta la conexión, repetir el comando: re-attach a tmux.
+

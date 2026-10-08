@@ -45,7 +45,7 @@ cd ~/dev/workspace/alpargatify/library-organizer
 
 `SOURCE_PATH` is the **parent** folder containing album subfolders — the script iterates `"$SOURCE_PATH"/*/`. Pointing it at a single album folder imports that album's *subfolders*, not the album.
 
-The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wrapper.sh` and the beets configs through absolute `$HOME/dev/workspace/alpargatify/...` paths.
+The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wrapper.sh` and the beets configs relative to its own location, so the same checkout works on the Mac and on the server (see [Running on the server](#running-on-the-server)).
 
 ### Parameters
 
@@ -55,7 +55,7 @@ The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wr
 | `-o` | `--organize-only` | The working mode: import FLAC → convert to Opus → push both trees to the share → update both `library.db`. Without an organization flag the script does nothing. |
 | `-f` | `--full-sync` | Alias of `-o`. It used to also mean "sync to the HDD backup"; that separate FLAC copy no longer exists. |
 | `-F` | `--force-high-res` | Bypasses the quality gate (see below). |
-| `-j N` | `--max-jobs N` | Albums imported in parallel. Default `sysctl -n hw.ncpu`. |
+| `-j N` | `--max-jobs N` | Albums imported in parallel. Default `nproc` (Linux) / `sysctl -n hw.ncpu` (macOS). |
 | `-h` | `--help` | Usage. Also shown when called with no arguments. |
 
 ### Environment variables
@@ -66,6 +66,10 @@ The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wr
 | `SMB_LOSSLESS` | `$SMB_BASE/navidrome_library_flac` | Lossless destination. |
 | `SMB_LOSSY` | `$SMB_BASE/navidrome_library` | Lossy destination (the tree Navidrome serves). |
 | `STAGING_BASE` | `~/.alpargatify-staging` | Local staging root. **Wiped at the start of every run.** |
+| `SMB_PENDING` | `$SMB_BASE/navidrome_inbox_pending` | Where albums beets did not import are parked instead of deleted. |
+| `FIX_OWNER` | unset | `user:group` applied (with `a+rX`) to everything written to the destinations. The server sets `0:0`. |
+| `BEETS_UID` / `BEETS_GID` | `1000` | User the beets container runs as (`beets/docker-compose.yml`). The server sets `0`. |
+| `ALPARGATIFY_PRUNE` | `yes` | `no` skips `parallel-wrapper.sh`'s global `docker system prune`, which on a shared Docker host would hit other stacks. |
 
 ```bash
 # dry rehearsal against scratch destinations, real libraries untouched
@@ -116,14 +120,14 @@ So the output side uses local staging, and `import_album()` copies each album fr
 
 ### 4. Quality gate
 
-`check_flac_format` reads the **first** FLAC of each folder with `afinfo` and returns:
+`check_flac_format` reads the **first** FLAC of each folder with `afinfo` (macOS) or `metaflac` (Linux, package `flac`) and returns:
 
 | Detected | Behaviour |
 |---|---|
 | 16-bit / 44.1 kHz | passes silently |
 | ≤ 24-bit / 48 kHz | `WARN`, proceeds |
 | above that | `WARN` and **the folder is skipped** unless `-F` |
-| unparseable `afinfo` output | `WARN`, proceeds |
+| unreadable sample rate / bit depth | `WARN`, proceeds |
 
 Folders containing `.mp3` files are skipped outright.
 
@@ -139,7 +143,12 @@ For each album, `wrapper.sh --import-only <album> <staging/flac>` starts a one-s
 
 `entrypoint.sh` inside the container handles multi-disc albums — if a folder holds two or more `CD N` / `Disc N` subfolders it imports from the parent so they group as one album — and retries beets up to 10 times with a growing backoff, which absorbs the SQLite lock contention of parallel jobs sharing one `library.db`.
 
-On success the album's **source folder on the share is deleted** (`rm -rf`); the audio is not lost, it has been moved into the lossless library.
+`finalize_source` then decides the source folder's fate:
+
+- wrapper exited `0` **and** no audio is left in the folder beets imported from → the source is **deleted** (`rm -rf`); the audio has been moved into the lossless library.
+- anything else → the folder is **moved to `navidrome_inbox_pending/`** (timestamp suffix if the name is taken) and a `WARN` is printed.
+
+The "audio left behind" check matters because beets exits `0` when it *skips* an album: choosing Skip in interactive mode, or `duplicate_action: skip`. Before this check those albums were deleted without having been imported.
 
 ### 6. Phase 2 — lossy conversion
 
@@ -183,13 +192,14 @@ T. Rex/
 
 ## Failure modes
 
-The pipeline is per album: one album failing never stops the others, and a failed album leaves its source folder on the share untouched.
+The pipeline is per album: one album failing never stops the others, and a failed or skipped album is moved, untouched, to `navidrome_inbox_pending/`.
 
 | Symptom | Cause | What to do |
 |---|---|---|
 | `SMB destination(s) not reachable` | share not mounted | mount it; nothing has run yet |
 | `mkdir /host_mnt/Volumes/...: file exists` | Docker asked to mount an SMB path | should not happen anymore; means localisation was bypassed |
-| `Failed to organize <album>` + container log ends in `Skipping.` / `exited with code 2` | beets found no confident match in quiet mode | rerun that album with `-i` and judge the match yourself |
+| `Failed to organize <album>` + container log ends in `Skipping.` / `exited with code 2` | beets found no confident match in quiet mode | album is in `navidrome_inbox_pending/`; rerun it with `-i` and judge the match yourself |
+| `beets did not import <album> (skipped / duplicate / no match)` | exit 0 but audio left behind: interactive Skip or duplicate | album is in `navidrome_inbox_pending/`; delete it if it really is a duplicate |
 | `File exceeds 24-bit/48kHz` then `Skipping folder` | quality gate | rerun with `-F` if you want it anyway |
 | `Beets DB unchanged this run — skipping push` | nothing was imported | expected, not an error |
 | `Staged beets DB ... looks corrupt — NOT pushing` | staged DB failed the header check | share DB is intact; investigate staging before rerunning |
@@ -207,6 +217,27 @@ Rollback material after a bad run: `library.db.prev` next to each library, and f
 - **`-j` above 2 buys little.** The network is the limit, and all parallel jobs share one SQLite `library.db`; the container's retry loop hides the contention but does not remove it.
 - **`duplicate_action: skip`.** beets cannot delete a duplicate's existing files — the real library is never mounted into the container — so `remove` would drop the DB row and leave the files, letting the re-import land beside the original under a `%aunique{}` suffix. `skip` keeps what is already there.
 - **Successful imports consume the inbox folder.** If you want to keep a copy, copy it aside first.
+
+## Running on the server
+
+The same script runs on LXC 101 (Docker host, `10.1.1.101`), which bind-mounts the 5TB disk directly, so there is no SMB slowness and no source localisation:
+
+| Host path | LXC 101 path |
+|---|---|
+| `/mnt/usb-hdd-wd-5tb/musicbucket` | `/mnt/musicbucket` |
+| `/mnt/usb-hdd-wd-5tb/downloads` | `/mnt/downloads` |
+
+The checkout lives at `/opt/alpargatify`. Do not call `sync-lossless.sh` directly there; use the launchers in `server/`, which set `SMB_BASE=/mnt/musicbucket`, `FIX_OWNER=0:0` (= `100000:100000` on the host, what Samba and Navidrome expect), `BEETS_UID/GID=0` and `ALPARGATIFY_PRUNE=no`:
+
+```bash
+server/inbox.sh list                 # download folders with FLAC (slskd/…, torrents/…)
+server/inbox.sh move "slskd/<album>" # slskd: moved; torrents: copied so they keep seeding
+server/sync.sh auto                  # detached tmux session "alp-sync", log in /var/log/alpargatify/
+server/sync.sh interactive           # tmux "alp-sync-i"; run it again to re-attach after a disconnect
+server/status.sh                     # running?, inbox/pending counts, tail of the last log
+```
+
+Only one sync runs at a time (both modes share the staging dir). From the phone, the iOS shortcuts in `shortcuts/ios/` call these over SSH through Tailscale; interactive mode needs a real terminal, so use an SSH app (Termius, Blink) and run `server/sync.sh interactive`.
 
 ## Related files
 

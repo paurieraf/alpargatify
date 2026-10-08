@@ -35,6 +35,15 @@ FORCE_HIGH_RES=false
 SMB_BASE="${SMB_BASE:-/Volumes/usb-hdd-wd-5tb/musicbucket}"
 SMB_LOSSLESS="${SMB_LOSSLESS:-$SMB_BASE/navidrome_library_flac}"
 SMB_LOSSY="${SMB_LOSSY:-$SMB_BASE/navidrome_library}"
+# Albums beets did not import (Skip in interactive mode, duplicates, no match)
+# are parked here instead of being deleted from the inbox.
+SMB_PENDING="${SMB_PENDING:-$SMB_BASE/navidrome_inbox_pending}"
+
+# Optional owner (user:group) for everything written to the destinations. Set
+# on the server, where the library must belong to the unprivileged-LXC root
+# (0:0 inside the LXC == 100000 on the host) and stay world-readable for
+# Navidrome. Unset on macOS: the SMB share forces its own owner.
+FIX_OWNER="${FIX_OWNER:-}"
 
 # Each library keeps its own beets DB next to its content. Since beets runs in a
 # container against the local staging dir, the DB has to be pulled in before the
@@ -49,9 +58,10 @@ STAGING_BASE="${STAGING_BASE:-$HOME/.alpargatify-staging}"
 LOSSLESS_ORGANIZED="$STAGING_BASE/flac"   # beets imports new FLAC here (local)
 LOSSY_PATH="$STAGING_BASE/lossy"          # beets converts to Opus here (local)
 
-BEETS_CONFIG="$HOME/dev/workspace/alpargatify/library-organizer/beets/beets-config.yaml"
-PARALLEL_WRAPPER="$HOME/dev/workspace/alpargatify/library-organizer/parallel-wrapper.sh"
-WRAPPER_SCRIPT="$(dirname "$PARALLEL_WRAPPER")/wrapper.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BEETS_CONFIG="$SCRIPT_DIR/beets/beets-config.yaml"
+PARALLEL_WRAPPER="$SCRIPT_DIR/parallel-wrapper.sh"
+WRAPPER_SCRIPT="$SCRIPT_DIR/wrapper.sh"
 
 # --- Colors for output ---
 RED='\033[0;31m'
@@ -66,29 +76,32 @@ success() { echo -e "${GREEN}SUCCESS:${NC} $1"; }
 warn() { echo -e "${YELLOW}WARN:${NC} $1"; }
 error() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 
-# Check FLAC format using afinfo
+# Check FLAC format using afinfo (macOS) or metaflac (Linux, package "flac")
 # Returns 0: OK (16/44), 1: Warn (24/48), 2: Skip (>24/48)
 check_flac_format() {
     local dir="$1"
     local first_flac=$(find "$dir" -maxdepth 1 -name "*.flac" -print -quit)
+    local sample_rate="" bit_depth=""
 
     if [ -z "$first_flac" ]; then
         return 0 # No flac files to check, assume OK or handled by beets
     fi
 
-    local afinfo_out=$(afinfo "$first_flac" 2>/dev/null)
-    if [ -z "$afinfo_out" ]; then
-        warn "Could not run afinfo on $first_flac. Proceeding with caution."
+    if command -v afinfo >/dev/null 2>&1; then
+        local afinfo_out=$(afinfo "$first_flac" 2>/dev/null)
+        # Example format: "Data format:     2 ch,  44100 Hz, flac (0x00000001) from 16-bit source"
+        sample_rate=$(echo "$afinfo_out" | grep "Data format:" | grep -oE "[0-9]+ Hz" | head -1 | awk '{print $1}')
+        bit_depth=$(echo "$afinfo_out" | grep "source bit depth:" | grep -oE "I[0-9]+" | head -1 | sed 's/I//')
+    elif command -v metaflac >/dev/null 2>&1; then
+        sample_rate=$(metaflac --show-sample-rate "$first_flac" 2>/dev/null)
+        bit_depth=$(metaflac --show-bps "$first_flac" 2>/dev/null)
+    else
+        warn "Neither afinfo nor metaflac available; cannot check $(basename "$first_flac"). Proceeding with caution."
         return 1
     fi
 
-    # Extract sample rate and bit depth
-    # Example format: "Data format:     2 ch,  44100 Hz, flac (0x00000001) from 16-bit source"
-    local sample_rate=$(echo "$afinfo_out" | grep "Data format:" | grep -oE "[0-9]+ Hz" | head -1 | awk '{print $1}')
-    local bit_depth=$(echo "$afinfo_out" | grep "source bit depth:" | grep -oE "I[0-9]+" | head -1 | sed 's/I//')
-
     if [ -z "$sample_rate" ] || [ -z "$bit_depth" ]; then
-        warn "Could not parse afinfo output for $first_flac. Proceeding with caution."
+        warn "Could not read sample rate / bit depth of $first_flac. Proceeding with caution."
         return 1
     fi
 
@@ -131,6 +144,10 @@ Beets DBs (copied into staging before import, pushed back after; previous kept a
   $SMB_LOSSLESS_DB
   $SMB_LOSSY_DB
 Local staging (auto, wiped each run): $STAGING_BASE
+
+Albums beets does not import (Skip, duplicate, no match, error) are moved to
+  $SMB_PENDING
+instead of being deleted. Set FIX_OWNER=user:group to chown everything written.
 EOF
     exit 0
 }
@@ -174,15 +191,16 @@ fi
 # Determine Max Jobs
 if [ -z "$MAX_JOBS" ]; then
     MAX_JOBS=4
-    if command -v sysctl >/dev/null 2>&1; then
-        MAX_JOBS=$(sysctl -n hw.ncpu)
-    elif command -v nproc >/dev/null 2>&1; then
+    # nproc first: Linux also ships sysctl, but without hw.ncpu.
+    if command -v nproc >/dev/null 2>&1; then
         MAX_JOBS=$(nproc)
+    elif command -v sysctl >/dev/null 2>&1; then
+        MAX_JOBS=$(sysctl -n hw.ncpu)
     fi
 fi
 
 if [ "$INTERACTIVE" = true ]; then
-    BEETS_CONFIG="$HOME/dev/workspace/alpargatify/library-organizer/beets/beets-config-interactive.yaml"
+    BEETS_CONFIG="$SCRIPT_DIR/beets/beets-config-interactive.yaml"
 fi
 
 # --- Preflight: SMB share must be mounted before we start importing ---
@@ -281,6 +299,7 @@ push_db() {
     fi
     [ -f "$dest" ] && mv -f "$dest" "$dest.prev"
     if mv -f "$dest.tmp" "$dest"; then
+        fix_owner "$dest"
         success "Beets DB updated: $dest (previous kept as $(basename "$dest").prev)"
     else
         warn "Failed to move the new beets DB into place at $dest."
@@ -302,7 +321,49 @@ is_network_path() {
     esac
 }
 
+# True when <dir> still holds audio. beets moves (never copies) imported files,
+# so audio left behind after a "successful" run means the album was skipped:
+# interactive Skip and duplicate_action=skip both exit 0.
+has_audio() {
+    [ -n "$(find "$1" -type f \( -iname '*.flac' -o -iname '*.mp3' -o -iname '*.m4a' \
+        -o -iname '*.opus' -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.aiff' \) -print -quit 2>/dev/null)" ]
+}
+
+# Apply FIX_OWNER (if set) to <path>, recursively, and make it world-readable.
+fix_owner() {
+    [ -n "$FIX_OWNER" ] || return 0
+    chown -R "$FIX_OWNER" "$1" && chmod -R a+rX "$1" || warn "Could not fix ownership of $1"
+}
+
+# finalize_source <album_dir> <rc>
+# rc 0 = imported: delete the source. Anything else = keep the audio by
+# parking the folder in SMB_PENDING for a later (interactive) pass.
+finalize_source() {
+    local dir="${1%/}" rc="$2" name dest
+    name=$(basename "$dir")
+    if [ "$rc" -eq 0 ]; then
+        success "Organized $name successfully. Deleting source."
+        rm -rf "$dir"
+        return 0
+    fi
+    if [ "$rc" -eq 3 ]; then
+        warn "beets did not import $name (skipped / duplicate / no match)."
+    else
+        warn "Failed to organize $name (exit $rc)."
+    fi
+    mkdir -p "$SMB_PENDING"
+    dest="$SMB_PENDING/$name"
+    [ -e "$dest" ] && dest="$dest.$(date +%Y%m%d-%H%M%S)"
+    if mv "$dir" "$dest"; then
+        fix_owner "$dest"
+        warn "  -> Moved to $dest"
+    else
+        warn "  -> Could not move it to $SMB_PENDING; left in place."
+    fi
+}
+
 # import_album <album_dir>  — localises when needed, then hands off to wrapper.sh
+# Returns wrapper's exit code, or 3 when beets exited 0 but left the audio behind.
 import_album() {
     local src_dir="$1" work_dir="$1" local_copy="" rc=0
     if [ "$SOURCE_IS_REMOTE" = true ]; then
@@ -322,7 +383,11 @@ import_album() {
         bash "$WRAPPER_SCRIPT" --beets-config "$BEETS_CONFIG" \
             --import-only "$work_dir" "$LOSSLESS_ORGANIZED" || rc=$?
     fi
-    # beets moved the audio out of the copy; drop whatever is left either way.
+    if [ "$rc" -eq 0 ] && has_audio "$work_dir"; then
+        rc=3
+    fi
+    # beets moved the audio out of the copy; drop whatever is left either way
+    # (the original is still on the share and finalize_source decides its fate).
     [ -n "$local_copy" ] && rm -rf "$local_copy"
     return "$rc"
 }
@@ -395,21 +460,16 @@ if [ "$ORG_MUSIC" = true ]; then
 
         if [ "$INTERACTIVE" = true ]; then
             info "  -> Interactive mode (foreground)"
-            if import_album "$dir"; then
-                success "Organized $folder_name successfully. Deleting source."
-                rm -rf "$dir"
-            else
-                warn "Failed to organize $folder_name."
-            fi
+            rc=0
+            import_album "$dir" || rc=$?
+            finalize_source "$dir" "$rc"
         else
             info "  -> Log: $log_file"
             (
-                if import_album "$dir" > "$log_file" 2>&1; then
-                    success "Organized $folder_name successfully. Deleting source."
-                    rm -rf "$dir"
-                else
-                    warn "Failed to organize $folder_name. Check log: $log_file"
-                fi
+                rc=0
+                import_album "$dir" > "$log_file" 2>&1 || rc=$?
+                [ "$rc" -ne 0 ] && warn "Check log: $log_file"
+                finalize_source "$dir" "$rc"
             ) &
             RUNNING_JOBS+=($!)
         fi
@@ -425,6 +485,12 @@ if [ "$ORG_MUSIC" = true ]; then
 fi
 
 # --- 2. Convert to lossy (local staging) + push everything to SMB ---
+# With FIX_OWNER, rsync lands files with the right owner and world-readable modes.
+RSYNC_OWNER_OPTS=()
+if [ -n "$FIX_OWNER" ]; then
+    RSYNC_OWNER_OPTS=(--chown="$FIX_OWNER" --chmod=Da+rx,Fa+r)
+fi
+
 run_parallel_tasks() {
     local conv_log="/tmp/lossy_conv.log"
     local push_flac_log="/tmp/push_flac.log"
@@ -436,7 +502,8 @@ run_parallel_tasks() {
     if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSLESS_ORGANIZED" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
         info "Pushing organized FLAC to SMB library in background..."
         info "  -> Log: $push_flac_log"
-        rsync -a --exclude='library.db' --exclude='beets-config.yaml' \
+        rsync -a ${RSYNC_OWNER_OPTS[@]+"${RSYNC_OWNER_OPTS[@]}"} \
+            --exclude='library.db' --exclude='beets-config.yaml' \
             "$LOSSLESS_ORGANIZED/" "$SMB_LOSSLESS/" > "$push_flac_log" 2>&1 &
         push_flac_pid=$!
     fi
@@ -497,7 +564,8 @@ run_parallel_tasks() {
     # 2.3 Push lossy (staging) to SMB library
     if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
         info "Pushing lossy (Opus) to SMB library..."
-        rsync -a --exclude='library.db' --exclude='beets-config.yaml' \
+        rsync -a ${RSYNC_OWNER_OPTS[@]+"${RSYNC_OWNER_OPTS[@]}"} \
+            --exclude='library.db' --exclude='beets-config.yaml' \
             "$LOSSY_PATH/" "$SMB_LOSSY/" && success "Lossy pushed to SMB." \
             || warn "Lossy push finished with errors."
     fi

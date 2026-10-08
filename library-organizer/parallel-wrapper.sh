@@ -253,9 +253,13 @@ cleanup() {
   
   info "Job logs available at: $LOG_DIR"
   
-  # Clean up Docker resources
-  info "Cleaning docker resources..."
-  docker system prune -f --volumes 2>/dev/null || warn "Docker cleanup had issues (safe to ignore)"
+  # Clean up Docker resources. wrapper.sh already runs `compose down` per job;
+  # the global prune is opt-out (ALPARGATIFY_PRUNE=no) because on a shared
+  # Docker host it would also prune other stacks' stopped containers/volumes.
+  if [ "${ALPARGATIFY_PRUNE:-yes}" = "yes" ]; then
+    info "Cleaning docker resources..."
+    docker system prune -f --volumes 2>/dev/null || warn "Docker cleanup had issues (safe to ignore)"
+  fi
   
   info "========================="
   
