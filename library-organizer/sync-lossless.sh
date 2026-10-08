@@ -539,6 +539,7 @@ if [ "$ORG_MUSIC" = true ]; then
     fetch_db "$SMB_LOSSLESS_DB" "$LOSSLESS_ORGANIZED"
     fetch_db "$SMB_LOSSY_DB" "$LOSSY_PATH"
 elif [ "$LOSSY_ONLY" = true ]; then
+    preflight_tools
     preflight_smb
     setup_staging
     fetch_db "$SMB_LOSSY_DB" "$LOSSY_PATH"
