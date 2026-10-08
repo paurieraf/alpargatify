@@ -13,7 +13,7 @@ SYNC_SCRIPT="$ORGANIZER_DIR/sync-lossless.sh"
 MUSICBUCKET="${MUSICBUCKET:-/mnt/musicbucket}"
 DOWNLOADS="${DOWNLOADS:-/mnt/downloads}"
 INBOX="${INBOX:-$MUSICBUCKET/navidrome_inbox}"
-PENDING="${PENDING:-$MUSICBUCKET/navidrome_inbox_pending}"
+FAILED="${FAILED:-$MUSICBUCKET/navidrome_inbox_failed}"
 LOG_DIR="${LOG_DIR:-/var/log/alpargatify}"
 
 # Owner for everything written to the disk: root of the unprivileged LXC,
@@ -28,7 +28,7 @@ SESSION_INTERACTIVE="alp-sync-i"
 # a running tmux server does not inherit the caller's exported variables.
 SYNC_ENV=(
     "SMB_BASE=$MUSICBUCKET"
-    "SMB_PENDING=$PENDING"
+    "SMB_FAILED=$FAILED"
     "STAGING_BASE=${STAGING_BASE:-/var/tmp/alpargatify-staging}"
     "FIX_OWNER=$OWNER"
     "BEETS_UID=${OWNER%%:*}"

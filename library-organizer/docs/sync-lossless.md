@@ -66,7 +66,7 @@ The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wr
 | `SMB_LOSSLESS` | `$SMB_BASE/navidrome_library_flac` | Lossless destination. |
 | `SMB_LOSSY` | `$SMB_BASE/navidrome_library` | Lossy destination (the tree Navidrome serves). |
 | `STAGING_BASE` | `~/.alpargatify-staging` | Local staging root. **Wiped at the start of every run.** |
-| `SMB_PENDING` | `$SMB_BASE/navidrome_inbox_pending` | Where albums beets did not import are parked instead of deleted. |
+| `SMB_FAILED` | `$SMB_BASE/navidrome_inbox_failed` | Where albums that were not imported are parked instead of deleted, each with a `<album>.txt` report. |
 | `FIX_OWNER` | unset | `user:group` applied (with `a+rX`) to everything written to the destinations. The server sets `0:0`. |
 | `BEETS_UID` / `BEETS_GID` | `1000` | User the beets container runs as (`beets/docker-compose.yml`). The server sets `0`. |
 | `ALPARGATIFY_PRUNE` | `yes` | `no` skips `parallel-wrapper.sh`'s global `docker system prune`, which on a shared Docker host would hit other stacks. |
@@ -146,7 +146,9 @@ For each album, `wrapper.sh --import-only <album> <staging/flac>` starts a one-s
 `finalize_source` then decides the source folder's fate:
 
 - wrapper exited `0` **and** no audio is left in the folder beets imported from → the source is **deleted** (`rm -rf`); the audio has been moved into the lossless library.
-- anything else → the folder is **moved to `navidrome_inbox_pending/`** (timestamp suffix if the name is taken) and a `WARN` is printed.
+- anything else → the folder is **moved to `navidrome_inbox_failed/`** (timestamp suffix if the name is taken), a `WARN: Not imported: <album> — <reason>` is printed, and **`<album>.txt`** is written next to it: date, mode, exit code, a plain-language reason and, in automatic mode, the last 60 lines of the album's import log.
+
+Folders rejected before import (`.mp3` inside, or above 24-bit/48 kHz without `-F`) take the same route instead of being left in the inbox, where every automatic run would trip over them again.
 
 The "audio left behind" check matters because beets exits `0` when it *skips* an album: choosing Skip in interactive mode, or `duplicate_action: skip`. Before this check those albums were deleted without having been imported.
 
@@ -192,14 +194,14 @@ T. Rex/
 
 ## Failure modes
 
-The pipeline is per album: one album failing never stops the others, and a failed or skipped album is moved, untouched, to `navidrome_inbox_pending/`.
+The pipeline is per album: one album failing never stops the others, and a failed or skipped album is moved, untouched, to `navidrome_inbox_failed/`.
 
 | Symptom | Cause | What to do |
 |---|---|---|
 | `SMB destination(s) not reachable` | share not mounted | mount it; nothing has run yet |
 | `mkdir /host_mnt/Volumes/...: file exists` | Docker asked to mount an SMB path | should not happen anymore; means localisation was bypassed |
-| `Failed to organize <album>` + container log ends in `Skipping.` / `exited with code 2` | beets found no confident match in quiet mode | album is in `navidrome_inbox_pending/`; rerun it with `-i` and judge the match yourself |
-| `beets did not import <album> (skipped / duplicate / no match)` | exit 0 but audio left behind: interactive Skip or duplicate | album is in `navidrome_inbox_pending/`; delete it if it really is a duplicate |
+| `Failed to organize <album>` + container log ends in `Skipping.` / `exited with code 2` | beets found no confident match in quiet mode | album is in `navidrome_inbox_failed/`; rerun it with `-i` and judge the match yourself |
+| `beets did not import <album> (skipped / duplicate / no match)` | exit 0 but audio left behind: interactive Skip or duplicate | album is in `navidrome_inbox_failed/`; delete it if it really is a duplicate |
 | `File exceeds 24-bit/48kHz` then `Skipping folder` | quality gate | rerun with `-F` if you want it anyway |
 | `Beets DB unchanged this run — skipping push` | nothing was imported | expected, not an error |
 | `Staged beets DB ... looks corrupt — NOT pushing` | staged DB failed the header check | share DB is intact; investigate staging before rerunning |
@@ -234,7 +236,9 @@ server/inbox.sh list                 # download folders with FLAC (slskd/…, to
 server/inbox.sh move "slskd/<album>" # slskd: moved; torrents: copied so they keep seeding
 server/sync.sh auto                  # detached tmux session "alp-sync", log in /var/log/alpargatify/
 server/sync.sh interactive           # tmux "alp-sync-i"; run it again to re-attach after a disconnect
-server/status.sh                     # running?, inbox/pending counts, tail of the last log
+server/status.sh                     # phase, albums done/total, elapsed, inbox/failed counts, log tail
+server/status.sh failed              # failed albums and why
+server/inbox.sh list failed          # failed albums; `move "failed/<album>"` puts one back in the inbox
 ```
 
 Only one sync runs at a time (both modes share the staging dir). From the phone, the iOS shortcuts in `shortcuts/ios/` call these over SSH through Tailscale; interactive mode needs a real terminal, so use an SSH app (Termius, Blink) and run `server/sync.sh interactive`.

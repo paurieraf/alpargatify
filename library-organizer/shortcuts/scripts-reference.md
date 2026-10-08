@@ -20,7 +20,7 @@ Rutas (definidas dentro de `sync-lossless.sh`, override con `SMB_BASE`/`SMB_LOSS
 
 OJO: sync-lossless BORRA (rm -rf) cada subcarpeta fuente tras organizar OK. Comportamiento normal (vacía el inbox).
 Si beets no importa el álbum (Skip interactivo, duplicado, sin match, error) la carpeta se MUEVE a
-`navidrome_inbox_pending/` en vez de borrarse.
+`navidrome_inbox_failed/` en vez de borrarse.
 
 ---
 
@@ -157,21 +157,40 @@ Estos modos quedan cubiertos por los shortcuts 1 y 2 de arriba:
 
 ---
 
+## macOS — barra de menús y vista de todos
+
+- **Ver todos:** app Atajos → barra lateral "Todos los atajos" (o carpeta propia, p.ej. "Alpargatify"). Terminal: `shortcuts list`.
+- **Barra de menús:** app Atajos → seleccionar atajo → panel **Detalles** (icono ⓘ arriba a la derecha) → marcar **Fijar en la barra de menús**. Aparece en el icono de Atajos de la barra de menús. Si el icono no sale: Atajos → Ajustes → General → "Mostrar en la barra de menús".
+- Lanzados desde la barra de menús (sin carpeta de entrada) usan el inbox por defecto.
+- Otras vías: mismo panel → **Usar como Acción rápida** (Finder/Servicios) y **Añadir atajo de teclado**.
+
+---
+
 ## iOS — ejecución en el server (LXC 101) por SSH
 
 Ficheros en `shortcuts/ios/` (generados con `build.py`, firmados con `sign.sh`). Usan la acción
 **Ejecutar script por SSH** contra `root@10.1.1.101` (alcanzable vía Tailscale, subnet router LXC 104).
-También aparecen en el Mac vía iCloud: sirven de "Sync server" sin Docker Desktop ni SMB.
+También aparecen en el Mac vía iCloud.
 
-| Shortcut | Comando remoto |
+**Alpargatify** (el principal, guiado) — menú con los pasos en orden:
+
+| Paso | Qué hace |
 |---|---|
-| Mou a inbox | `server/inbox.sh list` → elegir (multi) → `server/inbox.sh move -` (nombres por stdin) |
-| Sync server | `server/sync.sh auto` (tmux en segundo plano, vuelve al instante) |
-| Estat sync | `server/status.sh` |
+| 1. Moure àlbums a l'inbox | lista FLAC de slskd/torrents → elegir (multi) → mover; al acabar ofrece "2. Llançar el sync automàtic ara" |
+| 2. Llançar sync automàtic | `sync.sh auto` (tmux en el server, vuelve al instante) |
+| 3. Veure progrés | `status.sh`: fase 1/3–3/3, álbumes hechos/total, tiempo, últimas líneas |
+| 4. Àlbums fallits | `status.sh failed`: cada álbum en `navidrome_inbox_failed/` y su motivo |
+| 5. Reintentar fallits | devuelve los elegidos al inbox y copia al portapapeles el comando del modo interactivo |
+| Com funciona? | texto con el orden y qué hace cada paso |
+
+Sueltos (para Siri / widgets): **Mou a inbox**, **Sync server**, **Estat sync**.
+
+Control de errores: cada comando remoto termina en `2>&1 || true` (la acción SSH siempre devuelve la salida);
+si la salida contiene `ERROR` el atajo muestra una alerta con el mensaje y se detiene. Lista vacía → alerta "Res a moure".
+El progreso no se empuja al móvil: se consulta con "3. Veure progrés" / "Estat sync".
 
 Primera importación: abrir cada acción SSH → Autenticación **Clave SSH** → copiar la clave pública
 y añadirla a `/root/.ssh/authorized_keys` de LXC 101 (todas las acciones del dispositivo comparten clave).
 
-Interactivo desde el móvil: app SSH (Termius/Blink) → `ssh root@10.1.1.101` →
-`/opt/alpargatify/library-organizer/server/sync.sh interactive`. Si se corta la conexión, repetir el comando: re-attach a tmux.
-
+Interactivo desde el móvil: app SSH (Termius/Blink) →
+`ssh root@10.1.1.101 /opt/alpargatify/library-organizer/server/sync.sh interactive`. Si se corta la conexión, repetir el comando: re-attach a tmux.

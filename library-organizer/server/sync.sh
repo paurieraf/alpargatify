@@ -11,7 +11,8 @@
 #
 # Both run `sync-lossless.sh -o <inbox>` against the local bind-mount, so no SMB
 # staging copies are needed. Albums beets does not import end up in
-# navidrome_inbox_pending/ (see sync-lossless.sh: finalize_source).
+# navidrome_inbox_failed/ with a <album>.txt saying why (see sync-lossless.sh:
+# finalize_source).
 # ============================================================================
 
 set -euo pipefail
@@ -49,8 +50,10 @@ case "$MODE" in
         log="$LOG_DIR/sync-$(date +%Y%m%d-%H%M%S).log"
         cmd=$(quote_cmd env "${SYNC_ENV[@]}" "$SYNC_SCRIPT" -o -j 2 "$INBOX")
         # Exit status goes to the log so status.sh can report it.
+        # The header lets status.sh report progress as "done/total".
+        qlog=$(printf '%q' "$log")
         tmux new-session -d -s "$SESSION_AUTO" \
-            "$cmd > $(printf '%q' "$log") 2>&1; echo \"=== EXIT: \$? ===\" >> $(printf '%q' "$log")"
+            "echo '=== ALBUMS: $albums ===' > $qlog; $cmd >> $qlog 2>&1; echo \"=== EXIT: \$? ===\" >> $qlog"
         ln -sfn "$log" "$LOG_DIR/latest.log"
         success "Sync started: $albums album(s). Log: $log"
         ;;

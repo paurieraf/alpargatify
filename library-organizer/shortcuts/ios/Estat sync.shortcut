@@ -10,7 +10,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>9A7742A9-F38D-4F34-98D9-71CFAB46B78F</string>
+				<string>56161C90-DB55-4169-9182-2FDC11567A4D</string>
 				<key>WFSSHAuthenticationType</key>
 				<string>SSH Key</string>
 				<key>WFSSHHost</key>
@@ -18,7 +18,7 @@
 				<key>WFSSHPort</key>
 				<string>22</string>
 				<key>WFSSHScript</key>
-				<string>/opt/alpargatify/library-organizer/server/status.sh 2&gt;&amp;1</string>
+				<string>/opt/alpargatify/library-organizer/server/status.sh 2&gt;&amp;1 || true</string>
 				<key>WFSSHUser</key>
 				<string>root</string>
 			</dict>
@@ -39,7 +39,7 @@
 								<key>OutputName</key>
 								<string>Shell Script Result</string>
 								<key>OutputUUID</key>
-								<string>9A7742A9-F38D-4F34-98D9-71CFAB46B78F</string>
+								<string>56161C90-DB55-4169-9182-2FDC11567A4D</string>
 								<key>Type</key>
 								<string>ActionOutput</string>
 							</dict>

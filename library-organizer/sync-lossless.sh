@@ -35,9 +35,10 @@ FORCE_HIGH_RES=false
 SMB_BASE="${SMB_BASE:-/Volumes/usb-hdd-wd-5tb/musicbucket}"
 SMB_LOSSLESS="${SMB_LOSSLESS:-$SMB_BASE/navidrome_library_flac}"
 SMB_LOSSY="${SMB_LOSSY:-$SMB_BASE/navidrome_library}"
-# Albums beets did not import (Skip in interactive mode, duplicates, no match)
-# are parked here instead of being deleted from the inbox.
-SMB_PENDING="${SMB_PENDING:-$SMB_BASE/navidrome_inbox_pending}"
+# Albums that were not imported (Skip in interactive mode, duplicates, no match,
+# errors, quality gate) are parked here instead of being deleted from the inbox,
+# each with a "<album>.txt" next to it explaining why.
+SMB_FAILED="${SMB_FAILED:-$SMB_BASE/navidrome_inbox_failed}"
 
 # Optional owner (user:group) for everything written to the destinations. Set
 # on the server, where the library must belong to the unprivileged-LXC root
@@ -145,9 +146,9 @@ Beets DBs (copied into staging before import, pushed back after; previous kept a
   $SMB_LOSSY_DB
 Local staging (auto, wiped each run): $STAGING_BASE
 
-Albums beets does not import (Skip, duplicate, no match, error) are moved to
-  $SMB_PENDING
-instead of being deleted. Set FIX_OWNER=user:group to chown everything written.
+Albums that are not imported (Skip, duplicate, no match, error, mp3, > 24/48) are
+moved to $SMB_FAILED
+with a <album>.txt explaining why, instead of being deleted. Set FIX_OWNER=user:group to chown everything written.
 EOF
     exit 0
 }
@@ -335,35 +336,72 @@ fix_owner() {
     chown -R "$FIX_OWNER" "$1" && chmod -R a+rX "$1" || warn "Could not fix ownership of $1"
 }
 
-# finalize_source <album_dir> <rc>
+# Exit codes finalize_source understands besides wrapper.sh's own (0/1/2).
+RC_LEFT_AUDIO=3   # beets exited 0 but the audio is still there
+RC_HAS_MP3=10     # folder contains .mp3, never imported
+RC_HIGH_RES=11    # above 24-bit/48 kHz without -F
+
+failure_reason() {
+    case "$1" in
+        2) echo "beets found no confident match (quiet mode skipped it). Retry in interactive mode and choose the match yourself." ;;
+        "$RC_LEFT_AUDIO") echo "beets finished without error but did not import the files: you chose Skip in interactive mode, or the album is a duplicate of one already in the library (duplicate_action: skip). If it is a duplicate you can delete it." ;;
+        "$RC_HAS_MP3") echo "The folder contains .mp3 files; only lossless sources are imported." ;;
+        "$RC_HIGH_RES") echo "The FLAC exceeds 24-bit/48 kHz. Rerun with -F (--force-high-res) to import it anyway." ;;
+        *) echo "The import failed (wrapper/beets exit code $1). See the log below." ;;
+    esac
+}
+
+# write_failure_report <report.txt> <album_name> <source_dir> <rc> [log_file]
+write_failure_report() {
+    local report="$1" name="$2" src="$3" rc="$4" log="${5:-}"
+    {
+        echo "Album:     $name"
+        echo "Date:      $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Host:      $(hostname)"
+        echo "Mode:      $([ "$INTERACTIVE" = true ] && echo interactive || echo automatic)"
+        echo "Source:    $src"
+        echo "Exit code: $rc"
+        echo
+        echo "Reason:"
+        echo "  $(failure_reason "$rc")"
+        echo
+        echo "To retry: move the folder back to the inbox and run the interactive sync."
+        if [ -n "$log" ] && [ -f "$log" ]; then
+            echo
+            echo "--- Last 60 lines of $log ---"
+            # Drop ANSI colours/cursor codes and docker build noise.
+            tail -n 200 "$log" | sed "s/$(printf '\033')\[[0-9;]*[A-Za-z]//g" | grep -v '^#[0-9]' | tail -n 60
+        fi
+    } > "$report" 2>/dev/null || warn "Could not write $report"
+}
+
+# finalize_source <album_dir> <rc> [log_file]
 # rc 0 = imported: delete the source. Anything else = keep the audio by
-# parking the folder in SMB_PENDING for a later (interactive) pass.
+# parking the folder in SMB_FAILED, plus a <album>.txt with the reason.
 finalize_source() {
-    local dir="${1%/}" rc="$2" name dest
+    local dir="${1%/}" rc="$2" log="${3:-}" name dest
     name=$(basename "$dir")
     if [ "$rc" -eq 0 ]; then
         success "Organized $name successfully. Deleting source."
         rm -rf "$dir"
         return 0
     fi
-    if [ "$rc" -eq 3 ]; then
-        warn "beets did not import $name (skipped / duplicate / no match)."
-    else
-        warn "Failed to organize $name (exit $rc)."
-    fi
-    mkdir -p "$SMB_PENDING"
-    dest="$SMB_PENDING/$name"
+    warn "Not imported: $name — $(failure_reason "$rc")"
+    mkdir -p "$SMB_FAILED"
+    dest="$SMB_FAILED/$name"
     [ -e "$dest" ] && dest="$dest.$(date +%Y%m%d-%H%M%S)"
     if mv "$dir" "$dest"; then
+        write_failure_report "$dest.txt" "$name" "$dir" "$rc" "$log"
         fix_owner "$dest"
-        warn "  -> Moved to $dest"
+        fix_owner "$dest.txt"
+        warn "  -> Moved to $dest (reason in $(basename "$dest").txt)"
     else
-        warn "  -> Could not move it to $SMB_PENDING; left in place."
+        warn "  -> Could not move it to $SMB_FAILED; left in place."
     fi
 }
 
 # import_album <album_dir>  — localises when needed, then hands off to wrapper.sh
-# Returns wrapper's exit code, or 3 when beets exited 0 but left the audio behind.
+# Returns wrapper's exit code, or RC_LEFT_AUDIO when beets exited 0 but left the audio behind.
 import_album() {
     local src_dir="$1" work_dir="$1" local_copy="" rc=0
     if [ "$SOURCE_IS_REMOTE" = true ]; then
@@ -384,7 +422,7 @@ import_album() {
             --import-only "$work_dir" "$LOSSLESS_ORGANIZED" || rc=$?
     fi
     if [ "$rc" -eq 0 ] && has_audio "$work_dir"; then
-        rc=3
+        rc=$RC_LEFT_AUDIO
     fi
     # beets moved the audio out of the copy; drop whatever is left either way
     # (the original is still on the share and finalize_source decides its fate).
@@ -447,6 +485,7 @@ if [ "$ORG_MUSIC" = true ]; then
         # 1. Check for MP3s
         if find "$dir" -maxdepth 1 -name "*.mp3" -print -quit | grep -q .; then
             warn "Found .mp3 files in $(basename "$dir"). Skipping folder."
+            finalize_source "$dir" "$RC_HAS_MP3"
             continue
         fi
 
@@ -455,6 +494,7 @@ if [ "$ORG_MUSIC" = true ]; then
         check_flac_format "$dir" || check_res=$?
 
         if [ "$check_res" -eq 2 ]; then
+            finalize_source "$dir" "$RC_HIGH_RES"
             continue
         fi
 
@@ -468,8 +508,7 @@ if [ "$ORG_MUSIC" = true ]; then
             (
                 rc=0
                 import_album "$dir" > "$log_file" 2>&1 || rc=$?
-                [ "$rc" -ne 0 ] && warn "Check log: $log_file"
-                finalize_source "$dir" "$rc"
+                finalize_source "$dir" "$rc" "$log_file"
             ) &
             RUNNING_JOBS+=($!)
         fi

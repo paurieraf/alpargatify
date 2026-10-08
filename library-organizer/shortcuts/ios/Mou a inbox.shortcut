@@ -10,7 +10,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>009ADC1B-EAE7-4DC1-B9DD-378560B9E5CE</string>
+				<string>27D15454-A1C5-40B4-8964-6A35FC30C9BB</string>
 				<key>WFSSHAuthenticationType</key>
 				<string>SSH Key</string>
 				<key>WFSSHHost</key>
@@ -18,9 +18,159 @@
 				<key>WFSSHPort</key>
 				<string>22</string>
 				<key>WFSSHScript</key>
-				<string>/opt/alpargatify/library-organizer/server/inbox.sh list</string>
+				<string>/opt/alpargatify/library-organizer/server/inbox.sh list 2&gt;&amp;1 || true</string>
 				<key>WFSSHUser</key>
 				<string>root</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.conditional</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>GroupingIdentifier</key>
+				<string>E865D269-C4CC-460F-B398-6AA99CEC40AD</string>
+				<key>WFCondition</key>
+				<integer>101</integer>
+				<key>WFControlFlowMode</key>
+				<integer>0</integer>
+				<key>WFInput</key>
+				<dict>
+					<key>Type</key>
+					<string>Variable</string>
+					<key>Variable</key>
+					<dict>
+						<key>Value</key>
+						<dict>
+							<key>OutputName</key>
+							<string>Shell Script Result</string>
+							<key>OutputUUID</key>
+							<string>27D15454-A1C5-40B4-8964-6A35FC30C9BB</string>
+							<key>Type</key>
+							<string>ActionOutput</string>
+						</dict>
+						<key>WFSerializationType</key>
+						<string>WFTextTokenAttachment</string>
+					</dict>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.alert</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFAlertActionCancelButtonShown</key>
+				<false/>
+				<key>WFAlertActionMessage</key>
+				<string>No hi ha cap carpeta amb FLAC a downloads/slskd ni downloads/torrents.</string>
+				<key>WFAlertActionTitle</key>
+				<string>Res a moure</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.exit</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict/>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.conditional</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>GroupingIdentifier</key>
+				<string>E865D269-C4CC-460F-B398-6AA99CEC40AD</string>
+				<key>UUID</key>
+				<string>5166FD49-741C-420C-9B27-150BC3DF8D38</string>
+				<key>WFControlFlowMode</key>
+				<integer>2</integer>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.conditional</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>GroupingIdentifier</key>
+				<string>6E10CC25-578A-44CF-82B0-31C908993E45</string>
+				<key>WFCondition</key>
+				<integer>99</integer>
+				<key>WFConditionalActionString</key>
+				<string>ERROR</string>
+				<key>WFControlFlowMode</key>
+				<integer>0</integer>
+				<key>WFInput</key>
+				<dict>
+					<key>Type</key>
+					<string>Variable</string>
+					<key>Variable</key>
+					<dict>
+						<key>Value</key>
+						<dict>
+							<key>OutputName</key>
+							<string>Shell Script Result</string>
+							<key>OutputUUID</key>
+							<string>27D15454-A1C5-40B4-8964-6A35FC30C9BB</string>
+							<key>Type</key>
+							<string>ActionOutput</string>
+						</dict>
+						<key>WFSerializationType</key>
+						<string>WFTextTokenAttachment</string>
+					</dict>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.alert</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFAlertActionCancelButtonShown</key>
+				<false/>
+				<key>WFAlertActionMessage</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>attachmentsByRange</key>
+						<dict>
+							<key>{0, 1}</key>
+							<dict>
+								<key>OutputName</key>
+								<string>Shell Script Result</string>
+								<key>OutputUUID</key>
+								<string>27D15454-A1C5-40B4-8964-6A35FC30C9BB</string>
+								<key>Type</key>
+								<string>ActionOutput</string>
+							</dict>
+						</dict>
+						<key>string</key>
+						<string>￼</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+				</dict>
+				<key>WFAlertActionTitle</key>
+				<string>Error al servidor</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.exit</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict/>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.conditional</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>GroupingIdentifier</key>
+				<string>6E10CC25-578A-44CF-82B0-31C908993E45</string>
+				<key>UUID</key>
+				<string>B7DBD13B-1DCB-492A-8F31-AC1E9730CA3C</string>
+				<key>WFControlFlowMode</key>
+				<integer>2</integer>
 			</dict>
 		</dict>
 		<dict>
@@ -29,7 +179,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>F8B0BDDE-806D-42FB-B5EB-2BD4D7C4FDD3</string>
+				<string>B468708D-2E18-4E14-A8F7-EFEDFB291D07</string>
 				<key>WFTextSeparator</key>
 				<string>New Lines</string>
 				<key>text</key>
@@ -39,7 +189,7 @@
 						<key>OutputName</key>
 						<string>Shell Script Result</string>
 						<key>OutputUUID</key>
-						<string>009ADC1B-EAE7-4DC1-B9DD-378560B9E5CE</string>
+						<string>27D15454-A1C5-40B4-8964-6A35FC30C9BB</string>
 						<key>Type</key>
 						<string>ActionOutput</string>
 					</dict>
@@ -54,7 +204,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>235B456E-5A65-499D-BEF0-2FC22FD5D9EF</string>
+				<string>8FCA86F5-591A-4E37-9236-BF90E5284E4B</string>
 				<key>WFChooseFromListActionPrompt</key>
 				<string>Àlbums a moure a l'inbox</string>
 				<key>WFChooseFromListActionSelectMultiple</key>
@@ -66,7 +216,7 @@
 						<key>OutputName</key>
 						<string>Split Text</string>
 						<key>OutputUUID</key>
-						<string>F8B0BDDE-806D-42FB-B5EB-2BD4D7C4FDD3</string>
+						<string>B468708D-2E18-4E14-A8F7-EFEDFB291D07</string>
 						<key>Type</key>
 						<string>ActionOutput</string>
 					</dict>
@@ -81,7 +231,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>FE722599-9E8B-42BD-8E0D-5EA7856BAB7C</string>
+				<string>942CCD69-00DA-4B2C-9A53-CA694AFA5764</string>
 				<key>WFTextSeparator</key>
 				<string>New Lines</string>
 				<key>text</key>
@@ -91,7 +241,7 @@
 						<key>OutputName</key>
 						<string>Chosen Item</string>
 						<key>OutputUUID</key>
-						<string>235B456E-5A65-499D-BEF0-2FC22FD5D9EF</string>
+						<string>8FCA86F5-591A-4E37-9236-BF90E5284E4B</string>
 						<key>Type</key>
 						<string>ActionOutput</string>
 					</dict>
@@ -106,7 +256,7 @@
 			<key>WFWorkflowActionParameters</key>
 			<dict>
 				<key>UUID</key>
-				<string>C532AF57-C60C-476B-9F0A-FEDA22B2E5A8</string>
+				<string>597CD2C9-115B-4D8F-B4A1-3200D335FE89</string>
 				<key>WFInput</key>
 				<dict>
 					<key>Value</key>
@@ -114,7 +264,7 @@
 						<key>OutputName</key>
 						<string>Combined Text</string>
 						<key>OutputUUID</key>
-						<string>FE722599-9E8B-42BD-8E0D-5EA7856BAB7C</string>
+						<string>942CCD69-00DA-4B2C-9A53-CA694AFA5764</string>
 						<key>Type</key>
 						<string>ActionOutput</string>
 					</dict>
@@ -128,17 +278,53 @@
 				<key>WFSSHPort</key>
 				<string>22</string>
 				<key>WFSSHScript</key>
-				<string>/opt/alpargatify/library-organizer/server/inbox.sh move -</string>
+				<string>/opt/alpargatify/library-organizer/server/inbox.sh move - 2&gt;&amp;1 || true</string>
 				<key>WFSSHUser</key>
 				<string>root</string>
 			</dict>
 		</dict>
 		<dict>
 			<key>WFWorkflowActionIdentifier</key>
-			<string>is.workflow.actions.showresult</string>
+			<string>is.workflow.actions.conditional</string>
 			<key>WFWorkflowActionParameters</key>
 			<dict>
-				<key>Text</key>
+				<key>GroupingIdentifier</key>
+				<string>8AEB6B28-9F8B-4F74-AA6D-7606643F553A</string>
+				<key>WFCondition</key>
+				<integer>99</integer>
+				<key>WFConditionalActionString</key>
+				<string>ERROR</string>
+				<key>WFControlFlowMode</key>
+				<integer>0</integer>
+				<key>WFInput</key>
+				<dict>
+					<key>Type</key>
+					<string>Variable</string>
+					<key>Variable</key>
+					<dict>
+						<key>Value</key>
+						<dict>
+							<key>OutputName</key>
+							<string>Shell Script Result</string>
+							<key>OutputUUID</key>
+							<string>597CD2C9-115B-4D8F-B4A1-3200D335FE89</string>
+							<key>Type</key>
+							<string>ActionOutput</string>
+						</dict>
+						<key>WFSerializationType</key>
+						<string>WFTextTokenAttachment</string>
+					</dict>
+				</dict>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.alert</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFAlertActionCancelButtonShown</key>
+				<false/>
+				<key>WFAlertActionMessage</key>
 				<dict>
 					<key>Value</key>
 					<dict>
@@ -149,7 +335,7 @@
 								<key>OutputName</key>
 								<string>Shell Script Result</string>
 								<key>OutputUUID</key>
-								<string>C532AF57-C60C-476B-9F0A-FEDA22B2E5A8</string>
+								<string>597CD2C9-115B-4D8F-B4A1-3200D335FE89</string>
 								<key>Type</key>
 								<string>ActionOutput</string>
 							</dict>
@@ -160,6 +346,65 @@
 					<key>WFSerializationType</key>
 					<string>WFTextTokenString</string>
 				</dict>
+				<key>WFAlertActionTitle</key>
+				<string>Alguns àlbums no s'han pogut moure</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.conditional</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>GroupingIdentifier</key>
+				<string>8AEB6B28-9F8B-4F74-AA6D-7606643F553A</string>
+				<key>WFControlFlowMode</key>
+				<integer>1</integer>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.alert</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFAlertActionCancelButtonShown</key>
+				<false/>
+				<key>WFAlertActionMessage</key>
+				<dict>
+					<key>Value</key>
+					<dict>
+						<key>attachmentsByRange</key>
+						<dict>
+							<key>{0, 1}</key>
+							<dict>
+								<key>OutputName</key>
+								<string>Shell Script Result</string>
+								<key>OutputUUID</key>
+								<string>597CD2C9-115B-4D8F-B4A1-3200D335FE89</string>
+								<key>Type</key>
+								<string>ActionOutput</string>
+							</dict>
+						</dict>
+						<key>string</key>
+						<string>￼</string>
+					</dict>
+					<key>WFSerializationType</key>
+					<string>WFTextTokenString</string>
+				</dict>
+				<key>WFAlertActionTitle</key>
+				<string>Fet</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.conditional</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>GroupingIdentifier</key>
+				<string>8AEB6B28-9F8B-4F74-AA6D-7606643F553A</string>
+				<key>UUID</key>
+				<string>8057689E-1210-465F-BD1E-6108A0E08104</string>
+				<key>WFControlFlowMode</key>
+				<integer>2</integer>
 			</dict>
 		</dict>
 	</array>
