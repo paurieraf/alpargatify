@@ -240,6 +240,19 @@ preflight_smb() {
     fi
 }
 
+# --- Preflight: every tool the run needs, checked before anything is imported ---
+# A missing encoder used to surface only after the FLAC import, leaving the
+# album in the lossless library with no Opus copy for Navidrome.
+preflight_tools() {
+    local missing="" tool
+    for tool in docker rsync opusenc; do
+        command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+    done
+    if [ -n "$missing" ]; then
+        error "Missing required tool(s):$missing (Linux: apt install docker.io rsync opus-tools flac; macOS: brew install rsync opus-tools)"
+    fi
+}
+
 # --- Staging setup (local, wiped each run) ---
 setup_staging() {
     info "Preparing local staging: $STAGING_BASE"
@@ -515,6 +528,7 @@ SOURCE_IS_REMOTE=false
 INBOX_STAGING="$STAGING_BASE/inbox"
 
 if [ "$ORG_MUSIC" = true ]; then
+    preflight_tools
     preflight_smb
     setup_staging
     mkdir -p "$INBOX_STAGING"

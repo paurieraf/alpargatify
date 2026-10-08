@@ -81,6 +81,11 @@ show_progress() {
     echo "Phase:    $phase"
     echo "Albums:   $((done_ok + done_ko))/${total:-?} processed — $done_ok imported, $done_ko failed"
     [ -n "$start_ts" ] && echo "Elapsed:  $(human_duration $((now - start_ts)))"
+    # Phase-level problems (conversion/push) don't fail the run: surface them.
+    if grep -qE 'finished with errors|ERROR:' "$log"; then
+        echo "Problems:"
+        grep -E 'finished with errors|ERROR:' "$log" | strip_ansi | sed 's/^/  /'
+    fi
     if [ "$done_ko" -gt 0 ]; then
         echo "Failed:"
         grep 'Not imported:' "$log" | strip_ansi | sed -E 's/^WARN: Not imported: ([^—]*) —.*/  - \1/'

@@ -245,7 +245,7 @@ The same script runs on LXC 101 (Docker host, `10.1.1.101`), which bind-mounts t
 | `/mnt/usb-hdd-wd-5tb/musicbucket` | `/mnt/musicbucket` |
 | `/mnt/usb-hdd-wd-5tb/downloads` | `/mnt/downloads` |
 
-The checkout lives at `/opt/alpargatify`. Do not call `sync-lossless.sh` directly there; use the launchers in `server/`, which set `SMB_BASE=/mnt/musicbucket`, `FIX_OWNER=0:0` (= `100000:100000` on the host, what Samba and Navidrome expect), `BEETS_UID/GID=0` and `ALPARGATIFY_PRUNE=no`:
+The checkout lives at `/opt/alpargatify`; packages needed in the LXC: `docker.io` (already there), `tmux rsync flac opus-tools`. `sync-lossless.sh` checks for `docker`, `rsync` and `opusenc` before importing anything. Do not call `sync-lossless.sh` directly there; use the launchers in `server/`, which set `SMB_BASE=/mnt/musicbucket`, `FIX_OWNER=0:0` (= `100000:100000` on the host, what Samba and Navidrome expect), `BEETS_UID/GID=0` and `ALPARGATIFY_PRUNE=no`:
 
 ```bash
 server/inbox.sh list                 # download folders with FLAC (slskd/…, torrents/…)
