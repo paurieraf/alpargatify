@@ -8,7 +8,7 @@ It runs **on the laptop** (macOS) against the homeserver's 5 TB HDD, exposed ove
 flowchart TD
     IN["navidrome_inbox/&lt;album&gt;/<br/>(on the SMB share)"] -->|"cp, one album at a time"| LOC["~/.alpargatify-staging/inbox/"]
     LOC -->|"beets in Docker, --import-only"| FLACSTG["staging/flac/<br/>(organized FLAC)"]
-    FLACSTG -->|"flac-to-lossy.sh + beets"| LOSSYSTG["staging/lossy/<br/>(organized Opus)"]
+    FLACSTG -->|"flac-to-lossy.sh + beets as-is"| LOSSYSTG["staging/lossy/<br/>(organized Opus)"]
     FLACSTG -->|rsync| SMBFLAC["musicbucket/navidrome_library_flac/"]
     LOSSYSTG -->|rsync| SMBLOSSY["musicbucket/navidrome_library/"]
     SMBLOSSY -->|"bind mount, LXC 111"| ND["Navidrome<br/>(watcher, ~1 min)"]
@@ -40,6 +40,9 @@ cd ~/dev/workspace/alpargatify/library-organizer
 # albums above 24-bit/48 kHz (otherwise they are skipped with a WARN)
 ./sync-lossless.sh -o -F -j 2 "/Volumes/usb-hdd-wd-5tb/musicbucket/navidrome_inbox"
 
+# (re)build only the Opus copy of albums already in the FLAC library
+./sync-lossless.sh --lossy-only missing.list -j 2
+
 ./sync-lossless.sh --help
 ```
 
@@ -51,11 +54,12 @@ The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wr
 
 | Short | Long | Meaning |
 |---|---|---|
-| `-i` | `--interactive` | beets prompts for each tag match. Runs **foreground and sequential** (one album at a time, ignores `-j`) and switches config to `beets/beets-config-interactive.yaml`. Needs a TTY. |
+| `-i` | `--interactive` | beets prompts for each tag match. Runs **foreground and sequential** (one album at a time, ignores `-j`) and switches config to `beets/beets-config-interactive.yaml`. Needs a TTY. The Opus conversion that follows needs no input and runs as in `-o`. |
 | `-o` | `--organize-only` | The working mode: import FLAC → convert to Opus → push both trees to the share → update both `library.db`. Without an organization flag the script does nothing. |
 | `-f` | `--full-sync` | Alias of `-o`. It used to also mean "sync to the HDD backup"; that separate FLAC copy no longer exists. |
 | `-F` | `--force-high-res` | Bypasses the quality gate (see below). |
 | `-j N` | `--max-jobs N` | Albums imported in parallel. Default `nproc` (Linux) / `sysctl -n hw.ncpu` (macOS). |
+| `-L LIST` | `--lossy-only LIST` | Skip the FLAC import: copy the albums listed in `LIST` (one folder per line, relative to `navidrome_library_flac`; `#` lines ignored) from the FLAC library to staging, convert them and push only the Opus side and its DB. The FLAC library is only read. Takes no `SOURCE_PATH`. Feed it the lists described in [Phase 2](#6-phase-2--lossy-conversion) or `audit-library.py --emit-missing-lossy`. |
 | `-h` | `--help` | Usage. Also shown when called with no arguments. |
 
 ### Environment variables
@@ -86,6 +90,7 @@ SMB_BASE=/Volumes/usb-hdd-wd-5tb/musicbucket/.e2e-test \
 | Local staging | `~/.alpargatify-staging/{inbox,flac,lossy}` |
 | Per-album import log | `/tmp/import_<Album_Folder_Name>.log` |
 | Conversion log | `/tmp/lossy_conv.log` |
+| Albums whose Opus copy failed | `musicbucket/navidrome_inbox_failed/lossy-missing-<date>.list` |
 | FLAC push log | `/tmp/push_flac.log` |
 
 ## How it works under the hood
@@ -143,6 +148,8 @@ For each album, `wrapper.sh --import-only <album> <staging/flac>` starts a one-s
 
 `entrypoint.sh` inside the container handles multi-disc albums — if a folder holds two or more `CD N` / `Disc N` subfolders it imports from the parent so they group as one album — and retries beets up to 10 times with a growing backoff, which absorbs the SQLite lock contention of parallel jobs sharing one `library.db`.
 
+It does **not** retry once beets has already moved part of the album: a retry would import the rest as a second album, or skip it as a duplicate. And after every attempt it counts the library rows whose path is still under `/import`; if that number grew, beets died between adding the rows and moving the files, so it logs `PARTIAL IMPORT` and exits `4`. Before this guard such albums ended up as DB rows pointing to `/import/...` with their files half moved (three albums in the FLAC library, see `audit-library.py`).
+
 `finalize_source` then decides the source folder's fate:
 
 - wrapper exited `0` **and** no audio is left in the folder beets imported from → the source is **deleted** (`rm -rf`); the audio has been moved into the lossless library.
@@ -154,7 +161,13 @@ The "audio left behind" check matters because beets exits `0` when it *skips* an
 
 ### 6. Phase 2 — lossy conversion
 
-Then the organized FLAC in staging is fed back through `wrapper.sh` *without* `--import-only`, so it runs in full mode: `flac-to-lossy.sh` converts into a temp dir and beets imports that into `staging/lossy`. Album folders containing subfolders are dispatched through `parallel-wrapper.sh` with `--max-jobs`; flat album folders go one at a time.
+Then the organized FLAC in staging is fed back through `wrapper.sh --as-is`: `flac-to-lossy.sh` converts into a temp dir and beets imports that into `staging/lossy` **as-is** — `import -A -W` with `lastgenre`, `lyrics`, `musicbrainz`, `scrub` and `fromfilename` disabled (`beet -P`). The FLAC files already carry the tags beets wrote in phase 1 and `opusenc` copies them (and the embedded cover), so the Opus album gets exactly the same folder, file names and metadata as the FLAC one, with no second MusicBrainz/Last.fm/LRCLIB round and nothing to ask in interactive mode. `fetchart` stays on, but as-is imports only use local art (the `cover.*` the converter copies). Album folders containing subfolders are dispatched through `parallel-wrapper.sh` with `--max-jobs`; flat album folders go one at a time.
+
+Before, the Opus side was autotagged again from scratch, which could pick a different release than the FLAC (three Nadja albums carry different MusicBrainz IDs in each library) or different genres.
+
+A failed album no longer stops the batch. The conversion loop runs in a subshell that inherits `set -e`, so the first `wrapper.sh` that returned non-zero used to abort every album after it — that is how 13 Keith Jarrett albums imported together on 2026-07-06 never got an Opus copy. Now each failure is recorded (`parallel-wrapper.sh` appends the failed folder to `$FAILED_LIST_FILE`), the loop goes on, and at the end the script prints `N album(s) are in the FLAC library but have NO Opus copy`, writes them to `navidrome_inbox_failed/lossy-missing-<date>.list` (relative to the FLAC library, ready for `--lossy-only`) and exits `1`. A `.list`, not a `.txt`: `status.sh failed` reads every `*.txt` there as an album report.
+
+Skips are detected too: beets exits `0` when it does not import an album in quiet mode (duplicate) or on Skip, without printing `Skipping.`, so `wrapper.sh` checks on the host whether audio is still in its temp dir and returns `3` if so. (Inside the container that check is unreliable on Docker Desktop for Mac: the shared folder keeps listing stale upper/lower-case variants of files beets just moved.)
 
 The effective encode is **Opus 256 kbps**, invoked as `opusenc --bitrate 256 <in> <out>`. Override it wholesale with `ENCODE_OPTS`, which *replaces* the argument list rather than adding to it:
 
@@ -176,7 +189,7 @@ Navidrome (LXC 111) bind-mounts `navidrome_library` and its watcher (`WatcherWai
 
 ### 8. Cleanup
 
-`$STAGING_BASE` is removed on success. It is *not* removed when the run aborts, which is deliberate: the staged albums and DBs are still there to inspect.
+`$STAGING_BASE` is removed at the end of every completed run, including one where some Opus copies failed (their list is already saved in `navidrome_inbox_failed/`). It is *not* removed when the run aborts, which is deliberate: the staged albums and DBs are still there to inspect.
 
 ## Resulting library layout
 
@@ -206,8 +219,11 @@ The pipeline is per album: one album failing never stops the others, and a faile
 | `Beets DB unchanged this run — skipping push` | nothing was imported | expected, not an error |
 | `Staged beets DB ... looks corrupt — NOT pushing` | staged DB failed the header check | share DB is intact; investigate staging before rerunning |
 | `Beets import completed with some skippings` | exit code 2 from the container | partial success; check the per-album log |
+| `PARTIAL IMPORT` in the album log, exit `4` | beets died after adding DB rows but before moving every file | album is in `navidrome_inbox_failed/`; run `audit-library.py`, fix the rows pointing to `/import`, then retry |
+| `N album(s) are in the FLAC library but have NO Opus copy` | an Opus conversion or as-is import failed or was skipped (duplicate) | the FLAC is fine; rerun the printed `--lossy-only <list>` (on the server: `server/sync.sh lossy <list>`) once the cause is fixed |
+| `Beets left the files in place` (exit `3`) | beets exited 0 without importing: duplicate or Skip | for the Opus side, the album already exists there (maybe under another folder) |
 
-Beets container exit codes: `0` all albums imported, `2` at least one skipped, anything else a real failure.
+Exit codes: `0` all albums imported; `2` at least one skipped (no confident match in quiet mode); `3` (`wrapper.sh`) files left in place — duplicate or Skip; `4` partial import, DB rows left under `/import`; anything else a real failure. `sync-lossless.sh` itself exits `1` when some album still lacks its Opus copy.
 
 Rollback material after a bad run: `library.db.prev` next to each library, and for Navidrome itself the DB copy at `/root/pre-musicbucket-backup/navidrome.db` on the PVE host.
 
@@ -239,9 +255,41 @@ server/sync.sh interactive           # tmux "alp-sync-i"; run it again to re-att
 server/status.sh                     # phase, albums done/total, elapsed, inbox/failed counts, log tail
 server/status.sh failed              # failed albums and why
 server/inbox.sh list failed          # failed albums; `move "failed/<album>"` puts one back in the inbox
+server/sync.sh lossy /root/missing.list   # rebuild the Opus copy of the FLAC albums listed (tmux "alp-sync")
+server/audit.sh                      # read-only health check of both libraries (see below)
 ```
 
 Only one sync runs at a time (both modes share the staging dir). From the phone, the iOS shortcuts in `shortcuts/ios/` call these over SSH through Tailscale; interactive mode needs a real terminal, so use an SSH app (Termius, Blink) and run `server/sync.sh interactive`.
+
+## Auditing the libraries
+
+`audit-library.py` is a read-only health check: it compares each library's beets DB with the files on disk and the two libraries with each other. It never writes to them (DBs are opened read-only).
+
+```bash
+# on the server (authoritative: compares names byte for byte, as Linux and Navidrome see them)
+server/audit.sh                                   # summary, 10 samples per finding
+server/audit.sh --list                            # every entry
+server/audit.sh --emit-missing-lossy /root/missing.list && server/sync.sh lossy /root/missing.list
+
+# from the Mac, over SMB (slower; same results)
+./audit-library.py --lossless /Volumes/usb-hdd-wd-5tb/musicbucket/navidrome_library_flac \
+                   --lossy /Volumes/usb-hdd-wd-5tb/musicbucket/navidrome_library \
+                   [--old /Volumes/usb-hdd-wd-5tb/music]
+```
+
+`[!!]` findings are problems (exit status `1`), `[--]` lines are informational:
+
+| Finding | Meaning |
+|---|---|
+| DB path differs only in Unicode normalization / letter case | the file is there under a slightly different name: NFD written by macOS, or a folder merged on the case-insensitive SMB side. beets on Linux sees these items as missing, so a `beet update` would drop them. |
+| DB items with no file / absolute path outside the library | rows pointing to nothing, or to `/import/...` (broken import) |
+| audio files not in the DB | files beets does not know about |
+| album rows without items / releases imported more than once / art path missing | DB debris and duplicates |
+| album folders only in FLAC / only in Opus / whose tracks differ, DB albums only in one side, tags that differ | the mirror is broken |
+| files modified >1 day after beets last wrote them | tags edited outside beets; `beet update -p` shows what the DB would pick up |
+| folders without audio, temporary/partial files, other non-music files | leftovers to clean |
+
+`--emit-missing-lossy FILE` writes the FLAC album folders that have no Opus folder at all; albums that would fail or duplicate are written commented out with the reason (`# not (fully) in the FLAC DB, fix first: …`). `--old DIR` checks that an old copy of the Opus library holds nothing the current one lacks (`SAFE TO DELETE`).
 
 ## Related files
 
@@ -254,4 +302,5 @@ Only one sync runs at a time (both modes share the staging dir). From the phone,
 | `beets/entrypoint.sh` | per-album loop, multi-disc detection, retries |
 | `beets/beets-config.yaml` | quiet/non-interactive beets config |
 | `beets/beets-config-interactive.yaml` | config used by `-i` |
+| `audit-library.py` / `server/audit.sh` | read-only audit of both libraries and their DBs |
 | `homeserver` repo: `docs/storage.md` | server side: `musicbucket/` layout, bind mounts, NFC and permission rules |
