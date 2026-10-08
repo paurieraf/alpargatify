@@ -80,7 +80,9 @@ move_album() {
         mv "$src" "$dest" || { warn "Move failed: $name"; return 1; }
         success "Moved: $name"
     fi
-    chown -R "$OWNER" "$dest" && chmod -R a+rwX "$dest" || warn "Could not fix permissions on $dest"
+    if ! { chown -R "$OWNER" "$dest" && chmod -R a+rwX "$dest"; }; then
+        warn "Could not fix permissions on $dest"
+    fi
 }
 
 [ -d "$INBOX" ] || err "Inbox not found: $INBOX (is the bind-mount in place?)"

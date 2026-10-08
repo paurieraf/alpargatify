@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034  # these settings are used by the scripts that source this file
 # Shared settings for the server-side launchers (LXC 101, Docker host).
 # Sourced by sync.sh / inbox.sh / status.sh — not meant to be run directly.
 #

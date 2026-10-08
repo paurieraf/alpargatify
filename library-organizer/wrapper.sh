@@ -286,6 +286,7 @@ info "Temporary converter destination: $TMP_DEST"
 
 # Cleanup function to remove temporary directory
 # In dry-run mode, leaves directory for inspection
+# shellcheck disable=SC2329  # called through `trap cleanup EXIT`
 cleanup() {
   if [ "$DRY_RUN" = "yes" ]; then
     info "Dry-run mode: leaving temporary directory for inspection: $TMP_DEST"

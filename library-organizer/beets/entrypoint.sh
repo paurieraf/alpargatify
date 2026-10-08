@@ -77,7 +77,7 @@ has_disc_subfolders() {
 # Restores files from temporary backup to original location
 restore_files() {
   local folder_path="$1"
-  local folder_backup="${TEMP_IMPORT_PATH}/$(basename "$folder_path")"
+  local folder_backup; folder_backup="${TEMP_IMPORT_PATH}/$(basename "$folder_path")"
   
   if [[ "$IMPORT_MODE" != "tag-only" ]] || [[ ! -d "$folder_backup" ]]; then
     return 0

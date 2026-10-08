@@ -89,7 +89,7 @@ error() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 # Returns 0: OK (16/44), 1: Warn (24/48), 2: Skip (>24/48)
 check_flac_format() {
     local dir="$1"
-    local first_flac=$(find "$dir" -maxdepth 1 -name "*.flac" -print -quit)
+    local first_flac; first_flac=$(find "$dir" -maxdepth 1 -name "*.flac" -print -quit)
     local sample_rate="" bit_depth=""
 
     if [ -z "$first_flac" ]; then
@@ -97,7 +97,7 @@ check_flac_format() {
     fi
 
     if command -v afinfo >/dev/null 2>&1; then
-        local afinfo_out=$(afinfo "$first_flac" 2>/dev/null)
+        local afinfo_out; afinfo_out=$(afinfo "$first_flac" 2>/dev/null)
         # Example format: "Data format:     2 ch,  44100 Hz, flac (0x00000001) from 16-bit source"
         sample_rate=$(echo "$afinfo_out" | grep "Data format:" | grep -oE "[0-9]+ Hz" | head -1 | awk '{print $1}')
         bit_depth=$(echo "$afinfo_out" | grep "source bit depth:" | grep -oE "I[0-9]+" | head -1 | sed 's/I//')
@@ -251,6 +251,11 @@ preflight_tools() {
     if [ -n "$missing" ]; then
         error "Missing required tool(s):$missing (Linux: apt install docker.io rsync opus-tools flac; macOS: brew install rsync opus-tools)"
     fi
+    # A stopped or paused daemon fails every album one by one and parks the
+    # whole inbox in SMB_FAILED: catch it before anything is touched.
+    if ! docker info >/dev/null 2>&1; then
+        error "Docker is installed but its daemon does not answer (stopped, or Docker Desktop paused?). Start it and retry."
+    fi
 }
 
 # --- Staging setup (local, wiped each run) ---
@@ -372,7 +377,9 @@ has_audio() {
 # Apply FIX_OWNER (if set) to <path>, recursively, and make it world-readable.
 fix_owner() {
     [ -n "$FIX_OWNER" ] || return 0
-    chown -R "$FIX_OWNER" "$1" && chmod -R a+rX "$1" || warn "Could not fix ownership of $1"
+    if ! { chown -R "$FIX_OWNER" "$1" && chmod -R a+rX "$1"; }; then
+        warn "Could not fix ownership of $1"
+    fi
 }
 
 # Exit codes finalize_source understands besides wrapper.sh's own (0/1/2).
@@ -628,6 +635,7 @@ fi
 # With FIX_OWNER, rsync lands files with the right owner and world-readable modes.
 RSYNC_OWNER_OPTS=()
 if [ -n "$FIX_OWNER" ]; then
+    # shellcheck disable=SC2054  # the comma belongs to rsync's --chmod syntax
     RSYNC_OWNER_OPTS=(--chown="$FIX_OWNER" --chmod=Da+rx,Fa+r)
 fi
 
@@ -676,7 +684,11 @@ run_parallel_tasks() {
     ) > "$conv_log" 2>&1 &
     conv_pid=$!
 
-    wait "$conv_pid" && success "Lossy conversion completed." || warn "Lossy conversion finished with errors (check $conv_log)."
+    if wait "$conv_pid"; then
+        success "Lossy conversion completed."
+    else
+        warn "Lossy conversion finished with errors (check $conv_log)."
+    fi
     report_lossy_failures
 
     # Conversion is done, so the lossy DB is final: push it back.
@@ -684,16 +696,23 @@ run_parallel_tasks() {
 
     # Wait for the FLAC push to SMB
     if [ -n "$push_flac_pid" ]; then
-        wait "$push_flac_pid" && success "FLAC pushed to SMB." || warn "FLAC push finished with errors (check $push_flac_log)."
+        if wait "$push_flac_pid"; then
+            success "FLAC pushed to SMB."
+        else
+            warn "FLAC push finished with errors (check $push_flac_log)."
+        fi
     fi
 
     # 2.3 Push lossy (staging) to SMB library
     if [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
         info "Pushing lossy (Opus) to SMB library..."
-        rsync -a ${RSYNC_OWNER_OPTS[@]+"${RSYNC_OWNER_OPTS[@]}"} \
+        if rsync -a ${RSYNC_OWNER_OPTS[@]+"${RSYNC_OWNER_OPTS[@]}"} \
             --exclude='library.db' --exclude='beets-config.yaml' \
-            "$LOSSY_PATH/" "$SMB_LOSSY/" && success "Lossy pushed to SMB." \
-            || warn "Lossy push finished with errors."
+            "$LOSSY_PATH/" "$SMB_LOSSY/"; then
+            success "Lossy pushed to SMB."
+        else
+            warn "Lossy push finished with errors."
+        fi
     fi
 
 }

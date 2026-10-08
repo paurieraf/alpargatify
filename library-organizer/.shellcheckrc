@@ -1,0 +1,4 @@
+# server/*.sh source common.sh from their own folder: let shellcheck follow it
+# without -x, from any working directory.
+external-sources=true
+source-path=SCRIPTDIR

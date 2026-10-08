@@ -338,7 +338,7 @@ apply_metadata_to_m4a() {
       [ -z "$line" ] && continue
       local key="${line%%=*}"
       local val="${line#*=}"
-      local upper_key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+      local upper_key; upper_key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
       
       case "$upper_key" in
         TITLE) ap_args+=( --title "$val" ) ;;
@@ -376,8 +376,10 @@ apply_metadata_to_m4a() {
       esac
     done < "$metafile"
 
-    [ -n "$track_num" ] && [ -n "$track_total" ] && ap_args+=( --tracknum "$track_num/$track_total" ) || { [ -n "$track_num" ] && ap_args+=( --tracknum "$track_num" ); }
-    [ -n "$disc_num" ] && [ -n "$disc_total" ] && ap_args+=( --disk "$disc_num/$disc_total" ) || { [ -n "$disc_num" ] && ap_args+=( --disk "$disc_num" ); }
+    if [ -n "$track_num" ] && [ -n "$track_total" ]; then ap_args+=( --tracknum "$track_num/$track_total" )
+    elif [ -n "$track_num" ]; then ap_args+=( --tracknum "$track_num" ); fi
+    if [ -n "$disc_num" ] && [ -n "$disc_total" ]; then ap_args+=( --disk "$disc_num/$disc_total" )
+    elif [ -n "$disc_num" ]; then ap_args+=( --disk "$disc_num" ); fi
 
     local final_date=""
     if [ -n "$original_date" ]; then final_date="$original_date"; elif [ -n "$date" ]; then final_date="$date"; elif [ -n "$year" ]; then final_date="$year"; fi
@@ -455,9 +457,9 @@ strip_replaygain_to_temp() {
 convert_to_lossy() {
   local in_file="$1"
   local out_dir="$2"
-  local base="$(basename "$in_file")"
+  local base; base="$(basename "$in_file")"
   local name="${base%.*}"
-  local out_ext="$([ "$FORMAT" = "opus" ] && echo "opus" || echo "m4a")"
+  local out_ext; out_ext="$([ "$FORMAT" = "opus" ] && echo "opus" || echo "m4a")"
   local out_file="$out_dir/$name.$out_ext"
 
   if [ -e "$out_file" ]; then
@@ -521,7 +523,7 @@ convert_to_lossy() {
 copy_flac_file() {
   local in_file="$1"
   local out_dir="$2"
-  local base="$(basename "$in_file")"
+  local base; base="$(basename "$in_file")"
   local out_file="$out_dir/$base"
 
   if [ -e "$out_file" ] && [ "$SKIP_EXISTING" = "yes" ]; then
@@ -597,7 +599,7 @@ split_with_xld() {
   fi
 
   info "Detected CUE for image: ${relpath} -> splitting with XLD"
-  local TMPD="$(mktemp -d 2>/dev/null || mktemp -d -t flac2lossy_tmp 2>/dev/null || true)"
+  local TMPD; TMPD="$(mktemp -d 2>/dev/null || mktemp -d -t flac2lossy_tmp 2>/dev/null || true)"
   [ -z "$TMPD" ] && return 1
 
   if [ "$DRY_RUN" = "yes" ]; then
@@ -606,8 +608,7 @@ split_with_xld() {
     return 0
   fi
 
-  ( cd "$TMPD" && xld -c "$cue_file" -f flac "$srcfile" >/dev/null 2>&1 )
-  if [ $? -ne 0 ]; then
+  if ! ( cd "$TMPD" && xld -c "$cue_file" -f flac "$srcfile" >/dev/null 2>&1 ); then
     rm -rf "$TMPD"
     return 1
   fi
@@ -638,14 +639,14 @@ split_with_xld() {
 process_flac_file() {
   local srcfile="$1"
   local relpath="${srcfile#"$SRC"/}"
-  local dirpart="$(dirname "$relpath")"
-  local base="$(basename "$relpath")"
+  local dirpart; dirpart="$(dirname "$relpath")"
+  local base; base="$(basename "$relpath")"
   local name="${base%.*}"
   local destdir="$DEST/$dirpart"
 
   mkdir -p "$destdir" 2>/dev/null
   
-  local cue_file="$(find_cue_file "$srcfile")"
+  local cue_file; cue_file="$(find_cue_file "$srcfile")"
   if [ -n "$cue_file" ]; then
     if split_with_xld "$srcfile" "$cue_file" "$destdir" "$relpath"; then return 0; fi
   fi
