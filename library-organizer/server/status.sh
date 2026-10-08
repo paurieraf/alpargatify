@@ -6,7 +6,8 @@
 #   status.sh [LINES]    Progress of the current/last automatic sync (phase,
 #                        albums done/total, elapsed), inbox/failed counts and
 #                        the last LINES log lines (default 15).
-#   status.sh failed     Albums in navidrome_inbox_failed/ and why, newest first.
+#   status.sh failed     Albums in navidrome_inbox_failed/ and why, newest first,
+#                        plus the lists of FLAC albums still missing their Opus copy.
 # Plain text, no colour codes, so it reads well in the iOS shortcut result.
 # ============================================================================
 
@@ -36,6 +37,18 @@ show_failed() {
         sed -n '/^Reason:/{n;p;}' "$txt"
     done < <(ls -t "$FAILED"/*.txt 2>/dev/null)
     [ "$n" -gt 0 ] || echo "No reports."
+    show_lossy_missing
+}
+
+# Lists written by sync-lossless.sh when an album's Opus copy failed.
+show_lossy_missing() {
+    local list
+    while IFS= read -r list; do
+        [ -n "$list" ] || continue
+        echo
+        echo "Without Opus copy ($(basename "$list"), redo: sync.sh lossy \"$list\"):"
+        sed 's/^/  - /' "$list"
+    done < <(ls -t "$FAILED"/lossy-missing-*.list 2>/dev/null)
 }
 
 show_progress() {
@@ -72,6 +85,10 @@ show_progress() {
         echo "Failed:"
         grep 'Not imported:' "$log" | strip_ansi | sed -E 's/^WARN: Not imported: ([^—]*) —.*/  - \1/'
     fi
+    if grep -q 'have NO Opus copy' "$log"; then
+        echo "Without Opus copy:"
+        strip_ansi < "$log" | sed -n '/have NO Opus copy/,/Redo them with/p' | sed -n 's/^    - /  - /p'
+    fi
 }
 
 if [ "${1:-}" = "failed" ]; then
@@ -91,6 +108,8 @@ else
 fi
 echo "Inbox:  $(count_albums "$INBOX") album(s) waiting"
 echo "Failed: $(count_albums "$FAILED") album(s) (details: status.sh failed)"
+lossy_lists=$(ls "$FAILED"/lossy-missing-*.list 2>/dev/null | wc -l | tr -d ' ')
+[ "$lossy_lists" -eq 0 ] || echo "Opus:   $lossy_lists list(s) of FLAC albums without Opus copy (status.sh failed)"
 
 if [ -f "$latest" ]; then
     echo

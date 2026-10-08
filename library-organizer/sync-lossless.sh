@@ -19,6 +19,12 @@
 #     when SOURCE_PATH is on a network mount, each album is copied into local
 #     staging first and imported from there (see import_album/is_network_path).
 #     One album at a time, so peak local disk stays at roughly one album.
+#
+# The Opus library mirrors the FLAC one: each newly organized FLAC album is
+# converted and imported as-is (wrapper.sh --as-is), keeping the tags beets
+# already wrote, so both libraries end up with the same paths and metadata.
+# Albums whose Opus copy fails are listed in navidrome_inbox_failed/*.list and
+# can be redone later with --lossy-only.
 # ============================================================================
 
 set -e
@@ -61,6 +67,8 @@ LOSSY_PATH="$STAGING_BASE/lossy"          # beets converts to Opus here (local)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BEETS_CONFIG="$SCRIPT_DIR/beets/beets-config.yaml"
+# The as-is lossy import never prompts, so it always uses the quiet config.
+LOSSY_BEETS_CONFIG="$SCRIPT_DIR/beets/beets-config.yaml"
 PARALLEL_WRAPPER="$SCRIPT_DIR/parallel-wrapper.sh"
 WRAPPER_SCRIPT="$SCRIPT_DIR/wrapper.sh"
 
@@ -133,6 +141,10 @@ Flags:
   -f, --full-sync        Alias of --organize-only (kept for muscle memory).
   -F, --force-high-res   Process folders even if they exceed quality limits (> 24/48).
   -j, --max-jobs N       Set maximum number of parallel jobs (default: auto).
+  -L, --lossy-only LIST  Only (re)build the Opus copy of albums already in the FLAC
+                         library. LIST: one album folder per line, relative to the
+                         FLAC library (e.g. "Artist/Artist - [2001] Album"). The FLAC
+                         library and its DB are only read.
   -h, --help             Show this help message.
 
 SOURCE_PATH: Required for organization flags. Path to the folder with new music
@@ -148,7 +160,9 @@ Local staging (auto, wiped each run): $STAGING_BASE
 
 Albums that are not imported (Skip, duplicate, no match, error, mp3, > 24/48) are
 moved to $SMB_FAILED
-with a <album>.txt explaining why, instead of being deleted. Set FIX_OWNER=user:group to chown everything written.
+with a <album>.txt explaining why, instead of being deleted. Albums imported as
+FLAC whose Opus copy failed are listed in $SMB_FAILED/lossy-missing-<date>.list
+(feed it to --lossy-only). Set FIX_OWNER=user:group to chown everything written.
 EOF
     exit 0
 }
@@ -158,6 +172,8 @@ ORG_MUSIC=false
 INTERACTIVE=false
 SOURCE_PATH=""
 MAX_JOBS=""
+LOSSY_ONLY=false
+LOSSY_ONLY_LIST=""
 
 if [ "$#" -eq 0 ]; then usage; fi
 
@@ -168,6 +184,7 @@ while [[ "$#" -gt 0 ]]; do
         -f|--full-sync)     ORG_MUSIC=true; shift ;;
         -F|--force-high-res) FORCE_HIGH_RES=true; shift ;;
         -j|--max-jobs)      MAX_JOBS="$2"; shift 2 ;;
+        -L|--lossy-only)    LOSSY_ONLY=true; LOSSY_ONLY_LIST="$2"; shift 2 ;;
         -h|--help)          usage ;;
         *)
             if [ -z "$SOURCE_PATH" ]; then
@@ -187,6 +204,15 @@ fi
 
 if [ "$ORG_MUSIC" = true ] && [ ! -d "$SOURCE_PATH" ]; then
     error "Source path does not exist: $SOURCE_PATH"
+fi
+
+if [ "$LOSSY_ONLY" = true ]; then
+    if [ "$ORG_MUSIC" = true ] || [ -n "$SOURCE_PATH" ]; then
+        error "--lossy-only works on the FLAC library: it takes no -o/-f flag nor SOURCE_PATH."
+    fi
+    if [ -z "$LOSSY_ONLY_LIST" ] || [ ! -r "$LOSSY_ONLY_LIST" ]; then
+        error "Album list not readable: ${LOSSY_ONLY_LIST:-<missing>}"
+    fi
 fi
 
 # Determine Max Jobs
@@ -344,6 +370,7 @@ RC_HIGH_RES=11    # above 24-bit/48 kHz without -F
 failure_reason() {
     case "$1" in
         2) echo "beets found no confident match (quiet mode skipped it). Retry in interactive mode and choose the match yourself." ;;
+        4) echo "beets died halfway through moving the files: part of the album may already be in the library and its DB has rows pointing to /import. Do not retry blindly: run server/audit.sh and fix the album first." ;;
         "$RC_LEFT_AUDIO") echo "beets finished without error but did not import the files: you chose Skip in interactive mode, or the album is a duplicate of one already in the library (duplicate_action: skip). If it is a duplicate you can delete it." ;;
         "$RC_HAS_MP3") echo "The folder contains .mp3 files; only lossless sources are imported." ;;
         "$RC_HIGH_RES") echo "The FLAC exceeds 24-bit/48 kHz. Rerun with -F (--force-high-res) to import it anyway." ;;
@@ -430,6 +457,60 @@ import_album() {
     return "$rc"
 }
 
+# stage_lossless_albums <list> — copies the listed albums (folders relative to
+# the FLAC library, one per line) into staging, where the conversion step turns
+# them into Opus. The FLAC library is only read. Each copy lands in a side dir
+# and is moved in only when complete, so a failed copy is never converted
+# (cleanup_staging takes the leftovers).
+stage_lossless_albums() {
+    local list="$1" rel n=0
+    local incoming="$STAGING_BASE/lossy-only-incoming"
+    while IFS= read -r rel || [ -n "$rel" ]; do
+        rel="${rel%$'\r'}"
+        rel="${rel%/}"
+        case "$rel" in ''|'#'*) continue ;; esac
+        case "/$rel/" in
+            //*|*/../*|*/./*) warn "Skipping unsafe path in list: $rel"; continue ;;
+        esac
+        if [ ! -d "$SMB_LOSSLESS/$rel" ]; then
+            warn "Not in the FLAC library, skipping: $rel"; continue
+        fi
+        if [ -e "$LOSSLESS_ORGANIZED/$rel" ]; then
+            warn "Listed twice, skipping: $rel"; continue
+        fi
+        mkdir -p "$incoming/$(dirname "$rel")" "$LOSSLESS_ORGANIZED/$(dirname "$rel")"
+        if cp -R "$SMB_LOSSLESS/$rel" "$incoming/$rel" && mv "$incoming/$rel" "$LOSSLESS_ORGANIZED/$rel"; then
+            n=$((n + 1))
+            info "Staged for lossy conversion: $rel"
+        else
+            warn "Could not copy $rel into staging; left out of this run."
+        fi
+    done < "$list"
+    [ "$n" -gt 0 ] || error "Nothing to convert: none of the listed albums is in $SMB_LOSSLESS."
+    info "$n album(s) staged for lossy conversion."
+}
+
+# Album folders whose Opus copy failed this run (staging paths). Kept outside
+# the staging subdirs so rsync never ships it.
+LOSSY_FAILED_FILE="$STAGING_BASE/lossy_failed.txt"
+LOSSY_FAILURES=0
+
+# Turns LOSSY_FAILED_FILE into a list relative to the FLAC library and keeps it
+# in SMB_FAILED (staging is wiped on the next run), ready for --lossy-only.
+# .list, not .txt: status.sh reads every *.txt there as a failed-album report.
+report_lossy_failures() {
+    [ -s "$LOSSY_FAILED_FILE" ] || return 0
+    local list
+    mkdir -p "$SMB_FAILED"
+    list="$SMB_FAILED/lossy-missing-$(date +%Y%m%d-%H%M%S).list"
+    sed "s|^$LOSSLESS_ORGANIZED/||" "$LOSSY_FAILED_FILE" | sort -u > "$list"
+    fix_owner "$list"
+    LOSSY_FAILURES=$(wc -l < "$list" | tr -d ' ')
+    warn "$LOSSY_FAILURES album(s) are in the FLAC library but have NO Opus copy:"
+    sed 's/^/    - /' "$list"
+    warn "Redo them with: $(basename "$0") --lossy-only \"$list\""
+}
+
 SOURCE_IS_REMOTE=false
 INBOX_STAGING="$STAGING_BASE/inbox"
 
@@ -443,6 +524,11 @@ if [ "$ORG_MUSIC" = true ]; then
     fi
     fetch_db "$SMB_LOSSLESS_DB" "$LOSSLESS_ORGANIZED"
     fetch_db "$SMB_LOSSY_DB" "$LOSSY_PATH"
+elif [ "$LOSSY_ONLY" = true ]; then
+    preflight_smb
+    setup_staging
+    fetch_db "$SMB_LOSSY_DB" "$LOSSY_PATH"
+    stage_lossless_albums "$LOSSY_ONLY_LIST"
 fi
 
 # --- 1. Music Organization (Beets) into local staging ---
@@ -547,53 +633,39 @@ run_parallel_tasks() {
         push_flac_pid=$!
     fi
 
-    # 2.2 Conversion to Lossy (OPUS): staging LOSSLESS -> staging LOSSY
-    if [ "$ORG_MUSIC" = true ]; then
-        if [ "$INTERACTIVE" = true ]; then
-            info "Starting lossy conversion in foreground (interactive)..."
-            for item in "$LOSSLESS_ORGANIZED"/*/; do
-                [ -d "$item" ] || continue
-                # Check if it has subfolders (collections / artist dirs)
-                if [ -n "$(find "$item" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]; then
-                    info "Processing collection (sequential for interactive): $(basename "$item")"
-                    for subitem in "$item"/*/; do
-                        [ -d "$subitem" ] || continue
-                        bash "$WRAPPER_SCRIPT" --interactive --beets-config "$BEETS_CONFIG" "$subitem" "$LOSSY_PATH"
-                    done
-                else
-                    info "Processing album (interactive): $(basename "$item")"
-                    bash "$WRAPPER_SCRIPT" --interactive --beets-config "$BEETS_CONFIG" "$item" "$LOSSY_PATH"
-                fi
-            done
-        else
-            info "Starting lossy conversion in background..."
-            info "  -> Log: $conv_log"
-            (
-                for item in "$LOSSLESS_ORGANIZED"/*/; do
-                    [ -d "$item" ] || continue
-                    # Check if it has subfolders (collections / artist dirs)
-                    if [ -n "$(find "$item" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]; then
-                        info "Processing collection (parallel): $(basename "$item")"
-                        bash "$PARALLEL_WRAPPER" --max-jobs "$MAX_JOBS" "$item" "$LOSSY_PATH"
-                    else
-                        info "Processing album (sequential): $(basename "$item")"
-                        bash "$WRAPPER_SCRIPT" --beets-config "$BEETS_CONFIG" "$item" "$LOSSY_PATH"
-                    fi
-                done
-            ) > "$conv_log" 2>&1 &
-            conv_pid=$!
-        fi
-    fi
+    # 2.2 Conversion to Lossy (OPUS): staging LOSSLESS -> staging LOSSY.
+    #     The FLAC files already carry beets' final tags, so the Opus copies are
+    #     imported as-is (no autotag, no network plugins): same paths and
+    #     metadata as the FLAC library, and nothing to ask even in interactive
+    #     mode. A failed album is recorded and the loop moves on — the subshell
+    #     inherits `set -e`, which used to abort the rest of the batch.
+    : > "$LOSSY_FAILED_FILE"
+    info "Starting lossy conversion in background..."
+    info "  -> Log: $conv_log"
+    (
+        for item in "$LOSSLESS_ORGANIZED"/*/; do
+            [ -d "$item" ] || continue
+            item="${item%/}"
+            # Check if it has subfolders (collections / artist dirs)
+            if [ -n "$(find "$item" -mindepth 1 -maxdepth 1 -type d -print -quit)" ]; then
+                info "Processing collection (parallel): $(basename "$item")"
+                FAILED_LIST_FILE="$LOSSY_FAILED_FILE" bash "$PARALLEL_WRAPPER" --max-jobs "$MAX_JOBS" \
+                    --as-is --beets-config "$LOSSY_BEETS_CONFIG" "$item" "$LOSSY_PATH" \
+                    || warn "Lossy conversion had failures in: $(basename "$item")"
+            else
+                info "Processing album (sequential): $(basename "$item")"
+                bash "$WRAPPER_SCRIPT" --as-is --beets-config "$LOSSY_BEETS_CONFIG" "$item" "$LOSSY_PATH" \
+                    || { warn "Lossy conversion failed: $(basename "$item")"; echo "$item" >> "$LOSSY_FAILED_FILE"; }
+            fi
+        done
+    ) > "$conv_log" 2>&1 &
+    conv_pid=$!
 
-    # Wait for conversion (background mode)
-    if [ "$INTERACTIVE" = false ] && [ -n "${conv_pid:-}" ]; then
-        wait "$conv_pid" && success "Lossy conversion completed." || warn "Lossy conversion finished with errors (check $conv_log)."
-    fi
+    wait "$conv_pid" && success "Lossy conversion completed." || warn "Lossy conversion finished with errors (check $conv_log)."
+    report_lossy_failures
 
     # Conversion is done, so the lossy DB is final: push it back.
-    if [ "$ORG_MUSIC" = true ]; then
-        push_db "$LOSSY_PATH" "$SMB_LOSSY_DB" || true
-    fi
+    push_db "$LOSSY_PATH" "$SMB_LOSSY_DB" || true
 
     # Wait for the FLAC push to SMB
     if [ -n "$push_flac_pid" ]; then
@@ -601,7 +673,7 @@ run_parallel_tasks() {
     fi
 
     # 2.3 Push lossy (staging) to SMB library
-    if [ "$ORG_MUSIC" = true ] && [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
+    if [ -n "$(find "$LOSSY_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)" ]; then
         info "Pushing lossy (Opus) to SMB library..."
         rsync -a ${RSYNC_OWNER_OPTS[@]+"${RSYNC_OWNER_OPTS[@]}"} \
             --exclude='library.db' --exclude='beets-config.yaml' \
@@ -611,14 +683,15 @@ run_parallel_tasks() {
 
 }
 
-# Run tasks if needed
-if [ "$ORG_MUSIC" = true ]; then
+# Run tasks if needed, then clean staging (lossy failures were already saved
+# to SMB_FAILED by report_lossy_failures)
+if [ "$ORG_MUSIC" = true ] || [ "$LOSSY_ONLY" = true ]; then
     run_parallel_tasks
+    cleanup_staging
 fi
 
-# Clean staging on success
-if [ "$ORG_MUSIC" = true ]; then
-    cleanup_staging
+if [ "$LOSSY_FAILURES" -gt 0 ]; then
+    error "Finished, but $LOSSY_FAILURES album(s) still lack their Opus copy (listed above)."
 fi
 
 success "All tasks finished!"

@@ -13,10 +13,12 @@
 #   --order-only           : run beets to only move files into library (no autotag / no tag writes)
 #   --tag-only             : run beets to only autotag (write tags) but do not move/copy files
 #   --interactive          : run beets in interactive mode (attaches TTY and standard input)
+#   --as-is                : import without autotag or network plugins, keeping the
+#                            source's tags (lossy copies of already-tagged FLAC)
 #   --verbose              : add debug logging
 #
 # Usage:
-#   ./wrapper.sh [--dry-run] [--interactive] [--beets-config /abs/path/to/beets-config.yaml] \
+#   ./wrapper.sh [--dry-run] [--interactive] [--as-is] [--beets-config /abs/path/to/beets-config.yaml] \
 #                [--convert-only|--import-only|--order-only|--tag-only] \
 #                /path/to/source /absolute/path/to/music_library_root
 
@@ -74,6 +76,12 @@ _init_colors
 # Get current timestamp in YYYY-MM-DD HH:MM:SS format
 time_stamp() { date +"%Y-%m-%d %H:%M:%S"; }
 
+# True when <dir> still holds audio files
+has_audio() {
+  [ -n "$(find "$1" -type f \( -iname '*.flac' -o -iname '*.opus' -o -iname '*.mp3' -o -iname '*.m4a' \
+    -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.aiff' \) -print -quit 2>/dev/null)" ]
+}
+
 # Log error message to stderr in red
 # Args:
 #   $* - Error message to log
@@ -107,6 +115,9 @@ BEETS_CONFIG="$SCRIPT_DIR/beets/beets-config.yaml"
 DRY_RUN="no"
 INTERACTIVE="no"
 
+# Import as-is (no autotag, no network plugins): see --as-is
+AS_IS="no"
+
 # Operation mode: full, convert-only, import-only, order-only, tag-only
 MODE="full"
 
@@ -120,7 +131,7 @@ VERBOSE="no"
 # Display usage information and exit
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--dry-run] [--interactive] [--beets-config /path/to/beets-config.yaml] \
+Usage: $(basename "$0") [--dry-run] [--interactive] [--as-is] [--beets-config /path/to/beets-config.yaml] \
        [--convert-only | --import-only | --order-only | --tag-only] \
        /path/to/source /absolute/path/to/music_library_root
 
@@ -131,6 +142,9 @@ Modes (mutually exclusive):
  - --import-only          : skip conversion; run beets import (move + autotag)
  - --order-only           : run beets import but only move files into library (no autotag / no tag writes)
  - --tag-only             : run beets autotag / write tags but do not move files
+ - --as-is                : with full or --import-only, import keeping the source's tags
+                            (no autotag, no lastgenre/lyrics/musicbrainz). Used for the
+                            lossy mirror of albums already tagged in the FLAC library.
  - --verbose              : add debug logging
 
 Notes:
@@ -156,6 +170,7 @@ POSITIONAL=()
 while (( "$#" )); do
   case "$1" in
     --interactive) INTERACTIVE="yes"; shift ;;
+    --as-is) AS_IS="yes"; shift ;;
     --dry-run) DRY_RUN="yes"; shift ;;
     --beets-config) BEETS_CONFIG="$2"; shift 2 ;;
     --convert-only) MODE="convert-only"; shift ;;
@@ -182,6 +197,11 @@ fi
 
 SRC="$1"
 DEST="$2"
+
+if [ "$AS_IS" = "yes" ] && [ "$MODE" != "full" ] && [ "$MODE" != "import-only" ]; then
+  err "--as-is only combines with the default (full) mode or --import-only."
+  exit 2
+fi
 
 ###############################################################################
 # Validation and system checks
@@ -246,6 +266,7 @@ info "Converter:          $CONVERTER"
 info "Beets config:       $BEETS_CONFIG"
 info "Dry run:            $DRY_RUN"
 info "Interactive:        $INTERACTIVE"
+info "As-is:              $AS_IS"
 info "Mode:               $MODE"
 info "================"
 info ""
@@ -365,6 +386,8 @@ if [ "$MODE" = "order-only" ]; then
   IMPORT_MODE="order-only"
 elif [ "$MODE" = "tag-only" ]; then
   IMPORT_MODE="tag-only"
+elif [ "$AS_IS" = "yes" ]; then
+  IMPORT_MODE="as-is"
 else
   IMPORT_MODE="full"
 fi
@@ -412,14 +435,15 @@ else
   export PROJECT_NAME="$SANITIZED_NAME"
 fi
 
-# Run compose with unique project name
+# Run compose with unique project name. `|| EXIT_CODE=$?` keeps `set -e` from
+# exiting here: the container's code (2 = albums skipped) must reach the checks
+# below, and `compose down` must run either way.
+EXIT_CODE=0
 if [ "$INTERACTIVE" = "yes" ]; then
   # Use run --rm to allocate a TTY and attach stdin
-  VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml run --rm --build beets
-  EXIT_CODE=$?
+  VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml run --rm --build beets || EXIT_CODE=$?
 else
-  VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml up --build --abort-on-container-exit
-  EXIT_CODE=$?
+  VERBOSE=${VERBOSE} compose -p "$PROJECT_NAME" -f docker-compose.yml up --build --exit-code-from beets || EXIT_CODE=$?
 fi
 
 # Cleanup Docker resources (containers, networks, volumes)
@@ -431,9 +455,23 @@ compose -p "$PROJECT_NAME" -f docker-compose.yml down --volumes --remove-orphans
 # Return to original directory
 popd >/dev/null
 
-# Check if beets import succeeded
+# beets exits 0 when it does not import an album in quiet mode (duplicate,
+# duplicate_action: skip) or when the user picks Skip, without printing
+# "Skipping.": the converted files are then still in TMP_DEST. Checked here on
+# the host, because Docker Desktop's shared folders can list stale entries
+# inside the container after beets moves files.
+if [ "$EXIT_CODE" -eq 0 ] && [ -n "$TMP_DEST" ] && [ "$DRY_RUN" != "yes" ] && has_audio "$TMP_DEST"; then
+  EXIT_CODE=3
+fi
+
+# Check if beets import succeeded. Skips keep exit code 2 so callers can tell a
+# skipped album (still in the source) from an imported one.
 if [ "$EXIT_CODE" -eq 2 ]; then
   warn "Beets import completed with some skippings."
+  exit 2
+elif [ "$EXIT_CODE" -eq 3 ]; then
+  warn "Beets left the files in place: duplicate already in the library, or Skip."
+  exit 3
 elif [ "$EXIT_CODE" -ne 0 ]; then
   err "Beets (docker compose) finished with non-zero exit code: $EXIT_CODE"
   exit $EXIT_CODE

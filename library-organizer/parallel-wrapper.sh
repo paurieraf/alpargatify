@@ -14,8 +14,13 @@
 #   --import-only         : Pass import-only mode to wrapper.sh
 #   --order-only          : Pass order-only mode to wrapper.sh
 #   --tag-only            : Pass tag-only mode to wrapper.sh
+#   --as-is               : Pass --as-is (import keeping the source's tags) to wrapper.sh
 #   --verbose             : Enable verbose output
 #   -h, --help            : Show this help message
+#
+# Environment:
+#   FAILED_LIST_FILE      : if set, the path of every subdirectory whose job fails
+#                           is appended to this file (one per line)
 
 set -eo pipefail
 IFS=$'\n\t'
@@ -108,8 +113,12 @@ Options:
   --import-only         : Pass import-only mode to wrapper.sh
   --order-only          : Pass order-only mode to wrapper.sh
   --tag-only            : Pass tag-only mode to wrapper.sh
+  --as-is               : Pass --as-is (import keeping the source's tags) to wrapper.sh
   --verbose             : Enable verbose output
   -h, --help            : Show this help message
+
+Environment:
+  FAILED_LIST_FILE      : append the path of each failed subdirectory to this file
 
 Examples:
   # Process all subdirectories with default settings
@@ -134,7 +143,7 @@ while (( "$#" )); do
       MAX_JOBS="$2"
       shift 2
       ;;
-    --dry-run|--convert-only|--import-only|--order-only|--tag-only|--verbose)
+    --dry-run|--convert-only|--import-only|--order-only|--tag-only|--as-is|--verbose)
       WRAPPER_ARGS+=("$1")
       shift
       ;;
@@ -296,6 +305,7 @@ run_job() {
       exit_code=$?
       err "[FAILED] $subdir_name (exit code: $exit_code, log: $log_file)"
       echo "$subdir_name" >> "$LOG_DIR/.failed"
+      [ -n "${FAILED_LIST_FILE:-}" ] && echo "$subdir" >> "$FAILED_LIST_FILE"
       return $exit_code
     fi
   else
@@ -306,6 +316,7 @@ run_job() {
       exit_code=$?
       err "[FAILED] $subdir_name (exit code: $exit_code, log: $log_file)"
       echo "$subdir_name" >> "$LOG_DIR/.failed"
+      [ -n "${FAILED_LIST_FILE:-}" ] && echo "$subdir" >> "$FAILED_LIST_FILE"
       return $exit_code
     fi
   fi

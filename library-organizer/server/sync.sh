@@ -8,8 +8,11 @@
 #   sync.sh interactive   Open (or re-attach to) an interactive sync for albums
 #                         that need manual beets matching. Needs a terminal:
 #                         run it from an SSH session (Termius/Blink/Terminal).
+#   sync.sh lossy LIST    Rebuild, in the background, the Opus copy of the FLAC
+#                         albums in LIST (one folder per line, relative to
+#                         navidrome_library_flac; see audit.sh --emit-missing-lossy).
 #
-# Both run `sync-lossless.sh -o <inbox>` against the local bind-mount, so no SMB
+# auto/interactive run `sync-lossless.sh -o <inbox>` against the local bind-mount, so no SMB
 # staging copies are needed. Albums beets does not import end up in
 # navidrome_inbox_failed/ with a <album>.txt saying why (see sync-lossless.sh:
 # finalize_source).
@@ -21,8 +24,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 MODE="${1:-}"
 
-if [ "$MODE" != "auto" ] && [ "$MODE" != "interactive" ]; then
-    sed -n '4,11p' "$0" | sed 's/^# \{0,1\}//'
+if [ "$MODE" != "auto" ] && [ "$MODE" != "interactive" ] && [ "$MODE" != "lossy" ]; then
+    sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 
@@ -72,5 +75,24 @@ case "$MODE" in
         cmd=$(quote_cmd env "${SYNC_ENV[@]}" "$SYNC_SCRIPT" -i -o -j 1 "$INBOX")
         exec tmux new-session -s "$SESSION_INTERACTIVE" \
             "$cmd; echo; read -r -p 'Done. Press Return to close...' _"
+        ;;
+    lossy)
+        list="${2:-}"
+        [ -n "$list" ] && [ -r "$list" ] || err "Usage: $0 lossy LIST (readable file, one album folder per line)"
+        session_running "$SESSION_AUTO" && err "A sync is already running. Check it with status.sh."
+        session_running "$SESSION_INTERACTIVE" && err "An interactive sync is open. Finish it first."
+        albums=$(grep -c -v -e '^[[:space:]]*$' -e '^#' "$list" || true)
+        if [ "$albums" -eq 0 ]; then
+            success "The list is empty, nothing to convert."
+            exit 0
+        fi
+        list=$(readlink -f "$list")
+        log="$LOG_DIR/sync-$(date +%Y%m%d-%H%M%S).log"
+        cmd=$(quote_cmd env "${SYNC_ENV[@]}" "$SYNC_SCRIPT" --lossy-only "$list" -j 2)
+        qlog=$(printf '%q' "$log")
+        tmux new-session -d -s "$SESSION_AUTO" \
+            "echo '=== ALBUMS: $albums ===' > $qlog; $cmd >> $qlog 2>&1; echo \"=== EXIT: \$? ===\" >> $qlog"
+        ln -sfn "$log" "$LOG_DIR/latest.log"
+        success "Opus rebuild started: $albums album(s). Log: $log"
         ;;
 esac

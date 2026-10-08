@@ -17,6 +17,15 @@ readonly IMPORT_SRC_PATH="/import"
 readonly TEMP_IMPORT_PATH="/tmp/beets_import_backup"
 readonly MAX_RETRIES=10
 
+# as-is mode imports lossy copies of albums that beets already tagged in the
+# lossless library: the files carry the final tags, so anything that would hit
+# the network or rewrite metadata must stay off or the two libraries diverge.
+readonly AS_IS_DISABLED_PLUGINS="lastgenre,lyrics,musicbrainz,scrub,fromfilename"
+
+# Exit code for an import that died after moving some files: beets left DB rows
+# pointing into /import, so the album must not be treated as imported.
+readonly EXIT_PARTIAL_IMPORT=4
+
 # Tracks if any albums were skipped during import
 ALBUM_SKIPPED=0
 
@@ -120,10 +129,13 @@ build_beets_command() {
   local target_path="$1"
   
   BEET_CMD=(beet -c "$CONFIG_PATH")
-  
+
   # Add verbose flag if requested
   [[ "${VERBOSE:-no}" == "yes" ]] && BEET_CMD+=(-v)
-  
+
+  # Global flag: must precede the subcommand
+  [[ "${IMPORT_MODE:-full}" == "as-is" ]] && BEET_CMD+=(-P "$AS_IS_DISABLED_PLUGINS")
+
   BEET_CMD+=(import)
   
   # Add dry-run flag if requested
@@ -140,7 +152,13 @@ build_beets_command() {
       # Move files without autotagging or writing tags
       BEET_CMD+=(-A -W "$target_path")
       ;;
-      
+
+    as-is)
+      # Same as order-only, with the network/metadata plugins disabled above.
+      # fetchart still runs, but as-is imports only use local art sources.
+      BEET_CMD+=(-A -W "$target_path")
+      ;;
+
     tag-only)
       # Autotag/write tags without moving files
       local backup_path
@@ -158,22 +176,51 @@ build_beets_command() {
   esac
 }
 
+# Counts audio files under <dir>
+count_audio() {
+  find "$1" -type f \( -iname '*.flac' -o -iname '*.opus' -o -iname '*.mp3' -o -iname '*.m4a' \
+    -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.aiff' \) 2>/dev/null | wc -l
+}
+
+# Counts library rows whose path is still inside the import mount. Imported
+# items always end up inside /data, so any increase means beets died between
+# adding the rows and moving the files. Prints -1 when the query itself fails
+# (e.g. the DB is locked by a parallel import), so callers skip the check.
+count_import_rows() {
+  local out
+  out=$(beet -c "$CONFIG_PATH" ls -p "path:${IMPORT_SRC_PATH}" 2>/dev/null) || { echo -1; return 0; }
+  if [ -z "$out" ]; then echo 0; else printf '%s\n' "$out" | wc -l; fi
+}
+
 # Executes beets command with retry logic
+# Args:
+#   $1 - folder being imported (to detect partially moved albums)
 execute_with_retry() {
+  local folder_path="$1"
   local attempt=0
   local exit_code=1
-  
+  local moves_files=1
+  local rows_before=0 rows_after=0 audio_before=0 audio_after=0
+
+  # tag-only imports in place (-C) from the backup dir, and --pretend writes
+  # nothing: neither moves files nor can leave rows behind.
+  if [[ "$IMPORT_MODE" == "tag-only" ]] || [[ "${DRY_RUN:-no}" == "yes" ]]; then
+    moves_files=0
+  fi
+
   # Display command with proper spacing (temporarily change IFS)
   local OLD_IFS="$IFS"
   IFS=' '
   log "Running: ${BEET_CMD[*]}"
   IFS="$OLD_IFS"
-  
+
   while [ "$attempt" -lt "$MAX_RETRIES" ]; do
-    
+
     attempt=$((attempt+1))
+    audio_before=$(count_audio "$folder_path")
+    (( moves_files )) && rows_before=$(count_import_rows)
     set +e
-    
+
     if [ "${INTERACTIVE:-no}" = "yes" ]; then
       # In interactive mode, we must not redirect stdout/stderr through tee,
       # as it breaks the TTY output formatting and prompts.
@@ -198,12 +245,33 @@ execute_with_retry() {
     fi
     
     set -e
-    
+
+    if (( moves_files )); then
+      rows_after=$(count_import_rows)
+      if (( rows_before >= 0 && rows_after > rows_before )); then
+        log "ERROR: PARTIAL IMPORT — $((rows_after - rows_before)) item(s) left in the library DB with paths under ${IMPORT_SRC_PATH}."
+        log "ERROR: Not retrying. Find them with: beet ls -p path:${IMPORT_SRC_PATH}"
+        return "$EXIT_PARTIAL_IMPORT"
+      fi
+    fi
+
     if (( exit_code == 0 )); then
       log "Beets completed successfully"
       return 0
     fi
-    
+
+    # Retrying after beets already moved part of the album would import the
+    # rest as a separate (or duplicate-skipped) album: stop here instead.
+    # (On Docker Desktop for Mac the shared folder can still list stale
+    # case-variants of moved files, inflating this count: then it just retries
+    # as before. Whether audio was left behind after a success is checked by
+    # the callers on the host, where the listing is reliable.)
+    audio_after=$(count_audio "$folder_path")
+    if (( audio_after < audio_before )); then
+      log "ERROR: PARTIAL IMPORT — beets failed after moving $((audio_before - audio_after)) of ${audio_before} file(s). Not retrying."
+      return "$EXIT_PARTIAL_IMPORT"
+    fi
+
     if [ "$attempt" -lt "$MAX_RETRIES" ]; then
       local wait_time=$((attempt * 5))
       log "Attempt $attempt/$MAX_RETRIES failed — retrying in ${wait_time}s..."
@@ -231,9 +299,9 @@ process_folder() {
     return 0
   fi
   
-  # Execute with retry logic
+  # Execute with retry logic (tag-only imports from the backup copy)
   local exit_code=0
-  execute_with_retry || exit_code=$?
+  execute_with_retry "${BEET_CMD[-1]}" || exit_code=$?
   
   # Restore files if in tag-only mode
   if [[ "$IMPORT_MODE" == "tag-only" ]]; then
@@ -347,7 +415,9 @@ main() {
   local failed_folders=()
   local successful_folders=()
   local skipped_folders=()
-  
+  local partial=0
+  local rc
+
   for folder in "${folders[@]}"; do
     ALBUM_SKIPPED=0
     if process_folder "$folder"; then
@@ -357,7 +427,11 @@ main() {
         successful_folders+=("$(basename "$folder")")
       fi
     else
+      rc=$?
       failed_folders+=("$(basename "$folder")")
+      if (( rc == EXIT_PARTIAL_IMPORT )); then
+        partial=1
+      fi
     fi
   done
   
@@ -376,6 +450,9 @@ main() {
     for folder in "${failed_folders[@]}"; do
       log "  - $folder"
     done
+    if (( partial )); then
+      exit "$EXIT_PARTIAL_IMPORT"
+    fi
     exit 1
   fi
   
