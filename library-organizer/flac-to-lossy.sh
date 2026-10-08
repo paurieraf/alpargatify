@@ -469,7 +469,7 @@ convert_to_lossy() {
     fi
   fi
 
-  info "Converting: ${in_file#$SRC/} -> ${out_file#$DEST/}"
+  info "Converting: ${in_file#"$SRC"/} -> ${out_file#"$DEST"/}"
   
   # Strip ReplayGain if enabled (creates temp file)
   local encode_src="$in_file"
@@ -528,7 +528,7 @@ copy_flac_file() {
     return 0
   fi
 
-  info "Copying: ${in_file#$SRC/} -> ${out_file#$DEST/}"
+  info "Copying: ${in_file#"$SRC"/} -> ${out_file#"$DEST"/}"
   if [ "$DRY_RUN" = "yes" ]; then
     printf '  -> DRY RUN: cp %q %q\n' "$in_file" "$out_file"
     return 0
@@ -615,7 +615,7 @@ split_with_xld() {
   find "$TMPD" -type f \( -iname '*.flac' \) -print0 | while IFS= read -r -d '' trackfile; do
     # Handle subdirectories created by XLD (e.g. for track titles with slashes)
     # by flattening them into the root of TMPD with sanitized names to avoid collisions.
-    local rel_track="${trackfile#$TMPD/}"
+    local rel_track="${trackfile#"$TMPD"/}"
     if [[ "$rel_track" == */* ]]; then
       local safe_name="${rel_track//\//_}"
       debug "Collapsing XLD subdirectory file: $rel_track -> $safe_name"
@@ -637,7 +637,7 @@ split_with_xld() {
 
 process_flac_file() {
   local srcfile="$1"
-  local relpath="${srcfile#$SRC/}"
+  local relpath="${srcfile#"$SRC"/}"
   local dirpart="$(dirname "$relpath")"
   local base="$(basename "$relpath")"
   local name="${base%.*}"
