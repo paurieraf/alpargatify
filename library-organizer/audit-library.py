@@ -6,9 +6,10 @@ other (they must mirror: same album folders and track names, .flac vs .opus).
 Nothing is written to the libraries; DBs are opened read-only.
 
 Paths are compared byte for byte, as Linux (the server, Navidrome, beets in
-Docker) sees them. Run it on the server for authoritative results: over SMB
-from macOS the listing is still exact, but other tools resolve names
-case- and normalization-insensitively and can hide problems.
+Docker) sees them. Run it on the server (server/audit.sh) for authoritative
+results: over SMB, macOS presents many names decomposed (NFD) that are NFC on
+the server, so the normalization finding is meaningless there. The mirror and
+--old comparisons normalize names and are not affected.
 
 Usage:
   audit-library.py --lossless DIR --lossy DIR [--old DIR] [--list]
@@ -403,6 +404,9 @@ def main():
     start = time.time()
     rep = Report(args.samples, args.list)
     print(f'Library audit, {time.strftime("%Y-%m-%d %H:%M")} (read-only)')
+    if sys.platform == 'darwin':
+        print('NOTE: macOS shows names on SMB shares partly in NFD: ignore the "Unicode normalization"\n'
+              '      findings here and run server/audit.sh for those.')
     flac = Library('FLAC', args.lossless, args.threads)
     opus = Library('Opus', args.lossy, args.threads)
     check_library(flac, rep)

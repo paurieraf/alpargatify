@@ -271,7 +271,7 @@ server/audit.sh                                   # summary, 10 samples per find
 server/audit.sh --list                            # every entry
 server/audit.sh --emit-missing-lossy /root/missing.list && server/sync.sh lossy /root/missing.list
 
-# from the Mac, over SMB (slower; same results)
+# from the Mac, over SMB (slower; the NFC/NFD finding is NOT reliable there: macOS shows many NFC names as NFD)
 ./audit-library.py --lossless /Volumes/usb-hdd-wd-5tb/musicbucket/navidrome_library_flac \
                    --lossy /Volumes/usb-hdd-wd-5tb/musicbucket/navidrome_library \
                    [--old /Volumes/usb-hdd-wd-5tb/music]
@@ -281,7 +281,7 @@ server/audit.sh --emit-missing-lossy /root/missing.list && server/sync.sh lossy 
 
 | Finding | Meaning |
 |---|---|
-| DB path differs only in Unicode normalization / letter case | the file is there under a slightly different name: NFD written by macOS, or a folder merged on the case-insensitive SMB side. beets on Linux sees these items as missing, so a `beet update` would drop them. |
+| DB path differs only in Unicode normalization / letter case | the file is there under a slightly different name: the DB row was stored in another normalization (NFD), or two `albumartist` spellings were merged into one folder on the case-insensitive SMB side. beets on Linux sees these items as missing, so a `beet update` would drop them. Only trust the normalization count when run on the server. |
 | DB items with no file / absolute path outside the library | rows pointing to nothing, or to `/import/...` (broken import) |
 | audio files not in the DB | files beets does not know about |
 | album rows without items / releases imported more than once / art path missing | DB debris and duplicates |
