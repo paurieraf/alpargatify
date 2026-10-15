@@ -46,7 +46,7 @@ list_albums() {
             name=$(basename "$dir")
             is_skipped "$name" && continue
             # Only folders with FLAC somewhere inside (multi-disc included).
-            [ -n "$(find "$dir" -type f -iname '*.flac' -print -quit 2>/dev/null)" ] || continue
+            [ -n "$(find "$dir" -type f -iname '*.flac' ! -name '._*' -print -quit 2>/dev/null)" ] || continue
             echo "$client/$name"
         done < <(find "$(source_dir "$client")" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
     done

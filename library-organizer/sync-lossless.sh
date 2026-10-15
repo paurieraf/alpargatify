@@ -89,7 +89,7 @@ error() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 # Returns 0: OK (16/44), 1: Warn (24/48), 2: Skip (>24/48)
 check_flac_format() {
     local dir="$1"
-    local first_flac; first_flac=$(find "$dir" -maxdepth 1 -name "*.flac" -print -quit)
+    local first_flac; first_flac=$(find "$dir" -maxdepth 1 -name "*.flac" ! -name '._*' -print -quit)
     local sample_rate="" bit_depth=""
 
     if [ -z "$first_flac" ]; then
@@ -369,8 +369,10 @@ is_network_path() {
 # True when <dir> still holds audio. beets moves (never copies) imported files,
 # so audio left behind after a "successful" run means the album was skipped:
 # interactive Skip and duplicate_action=skip both exit 0.
+# AppleDouble files (._foo.flac, written by macOS onto SMB) are not audio and
+# beets ignores them, so they stay behind after a good import: skip them.
 has_audio() {
-    [ -n "$(find "$1" -type f \( -iname '*.flac' -o -iname '*.mp3' -o -iname '*.m4a' \
+    [ -n "$(find "$1" -type f ! -name '._*' \( -iname '*.flac' -o -iname '*.mp3' -o -iname '*.m4a' \
         -o -iname '*.opus' -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.aiff' \) -print -quit 2>/dev/null)" ]
 }
 

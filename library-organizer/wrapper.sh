@@ -76,9 +76,9 @@ _init_colors
 # Get current timestamp in YYYY-MM-DD HH:MM:SS format
 time_stamp() { date +"%Y-%m-%d %H:%M:%S"; }
 
-# True when <dir> still holds audio files
+# True when <dir> still holds audio files (AppleDouble ._* files are not audio)
 has_audio() {
-  [ -n "$(find "$1" -type f \( -iname '*.flac' -o -iname '*.opus' -o -iname '*.mp3' -o -iname '*.m4a' \
+  [ -n "$(find "$1" -type f ! -name '._*' \( -iname '*.flac' -o -iname '*.opus' -o -iname '*.mp3' -o -iname '*.m4a' \
     -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.aiff' \) -print -quit 2>/dev/null)" ]
 }
 
