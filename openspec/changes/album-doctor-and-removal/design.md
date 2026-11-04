@@ -122,7 +122,23 @@ Rollback is automatic only in the one window where it is provably exact: after t
 
 No configuration, schema or plugin change is involved, so there is no data migration and no compatibility window.
 
+## Deployment evidence (2026-11-04, live stack)
+
+Run from the PVE host (`root@10.1.1.10`), with the repository checked out at `/opt/alpargatify` on the PVE host (clone over SSH, key `/root/.ssh/id_ed25519_github`) at commit `35f195e`, and `export MUSICBUCKET=/mnt/usb-hdd-wd-5tb/musicbucket`.
+
+Tooling check: `python3 -m py_compile` on `audit-library.py` and `beets/rm_album.py`, `bash -n` on `common.sh`, `remove-album.sh` and `navidrome-snapshot.sh`, and `--help` for both entry points all pass on the host (Python 3.13.5, git 2.47.3, no Docker on the host — the beets work goes through `pct exec 101 -- docker run`).
+
+Snapshot used by both reports: `.ops/navidrome-20261104T081052Z.db` (885,112,832 B, UTC stamp), created and verified by `server/navidrome-snapshot.sh` (`media_file=46663`, `albums=4337`, `libraries=1`, `quick_check` ok, `.ops` pruned to two).
+
+Doctor on the example release (`--release "William Basinski/William Basinski - [2026] Passing the Cup of Sorrows" --navidrome-db <snapshot> --library-map /media/music=…/navidrome_library`): `flac_disk 10 / flac_db 10 / opus_disk 3 / opus_db 10 / navidrome 3`, 15 findings (7 `TRACK_SHORT` + 8 `ORPHAN_PATH`), exit 1. `--missing` on the same snapshot: `missing files: 0 (MASS_MISSING above 20)`, exit 0 — this is the baseline a removal must return to.
+
+Removal dry run on the same release (`--dry-run --beets-tools-dir /opt/beets-tools`): all ten stages printed their plan, including the two album ids (`5506` lossless, `4713` lossy), the two trash destinations under `<run>/lossless|lossy/…`, the targeted `scan -t 1:"…"` with `ND_SCANNER_PURGEMISSING=never` and the purge command with `always`; every store reported unchanged, exit 0.
+
+End-to-end with a throwaway release (`Fela Kuti & Africa 70 - [2013] Confusion`, one track, consistent in all five views; album ids `4983`/`4218`, Navidrome `383yndYcQ9rZ5BCaGIeev6`): the real removal reported `baseline_missing=0`, `gate_allowed=1`, `gate_baseline=pass`, `rows_lossless_items=1`, `rows_lossy_items=1`, `trash_moved=2`, `gate_after=pass`, `purge_ran=scan`, `verify=clean`, `result=removed`, exit 0; afterwards both trees were gone, both beets albums had 0 items and `navidrome missing list` returned `[]`. The rollback (files back from trash, both `library.db` restored from `library.db.prev`, targeted rescan to re-add in Navidrome) left both databases byte-identical to their pre-run SHA-256, both trees back to 2 files, the doctor reporting `0 finding(s) … exit 0` and `--missing` reporting nothing missing. This is the round trip the procedure is supposed to guarantee.
+
+Note for the LXC 101 deployment: its checkout is on `feat/server-side-sync` (pulled to `f257042`), which does not contain `beets/rm_album.py`, so the run used `--beets-tools-dir /opt/beets-tools` (the file pushed with `pct push --perms 644`) instead of the default `/opt/alpargatify/library-organizer/beets`. Once `paurieraf/eliminar-track` reaches that branch, the default path works without the flag and the tools copy can be deleted.
+
 ## Open Questions
 
-- Whether the PVE host should keep a full checkout of the repository or only the three scripts (a deployment convenience; it does not change behaviour).
+- ~~Whether the PVE host should keep a full checkout of the repository or only the three scripts~~ — answered by the deployment: a full checkout at `/opt/alpargatify`, cloned over SSH from GitHub, so `git pull` updates the entry points and the audit script together.
 - Whether the doctor should be wired to a timer on the host once the drift is understood (deliberately left out of this change).

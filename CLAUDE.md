@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Self-hosted personal music streaming stack built around **Navidrome**. Three independent subprojects, each deployed via Docker Compose. No shared build system — treat each folder as its own project.
 
-- `navidrome-orchestra/` — the production Navidrome stack: reverse proxy, monitoring, storage/file helpers, tagging tools. Deployed on a remote Ubuntu host.
+- `navidrome-orchestra/` — a reference Docker Compose stack (reverse proxy, monitoring, storage/file helpers, tagging tools). **It is not the deployed stack:** the live Navidrome runs natively inside LXC 111 of the Proxmox host and is configured from the `homeserver` repository (`lxcs/111-navidrome/`, `docs/navidrome.md`).
 - `library-organizer/` — bash + Docker pipeline that converts lossless FLAC to lossy (Opus/AAC) and imports into a beets-managed library.
 - `telegram-bot/` — Python Telegram bot integrating with Navidrome's Subsonic API for scheduled notifications and interactive commands.
 

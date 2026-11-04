@@ -2,8 +2,11 @@
 
 Self-hosted music stack (Navidrome) split into three independent subprojects — no shared build system. Treat each folder as its own project. Deeper architecture docs: root `CLAUDE.md` and per-subproject `GEMINI.md` (navidrome-orchestra, library-organizer only — telegram-bot has none). Subproject READMEs are user-facing.
 
+**The live Navidrome is not deployed from this repository.** It runs natively inside LXC 111 of the Proxmox host, and its configuration, mount guard and runbooks live in the `homeserver` repository (`lxcs/111-navidrome/`, `docs/navidrome.md`). `navidrome-orchestra/` is a reference Docker Compose stack, not the running system. The one part of this repository that talks to the live stack is `library-organizer/server/`, which runs on the Proxmox host and reaches the containers through `pct` (`pct exec 111` for the Navidrome CLI and `pct exec 101` for the beets image).
+
 ## navidrome-orchestra
 
+- **Not the deployed stack.** The live instance is native in LXC 111 (`homeserver` repository). These conventions apply only if you actually run this compose stack.
 - **Never run `docker compose` directly — always via `bootstrap.sh`.** It renders templates, generates secrets, computes PUID/PGID from `NAVIDROME_MUSIC_PATH`, and enables compose profiles.
 - `cp .env.example .env` then `./bootstrap.sh` (`--prod` for HTTPS templates, `--down` to stop).
 - Profiles: `monitoring`, `extra-storage`, `wud`, `picard`, `mdrm`, `dozzle` — each disableable with `--no-<name>`. All enabled by default.

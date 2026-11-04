@@ -28,7 +28,7 @@ Parallelisation note: group 1 lands first (both other groups consume it). After 
 
 ## 4. Integration and deployment
 
-- [ ] 4.1 Run the doctor and a removal dry run against the live stack from the PVE host with `MUSICBUCKET=/mnt/usb-hdd-wd-5tb/musicbucket`, and record the two reports in the change (they are the acceptance evidence for the retired risk).
-- [ ] 4.2 Deploy: `git pull` in `/opt/alpargatify` on LXC 101 and place the host checkout at `/opt/alpargatify`; verify `python3 -m py_compile`, `bash -n` on every touched script, and that `remove-album.sh --help` and `audit-library.py --help` run from the host with no missing dependency.
-- [ ] 4.3 End-to-end on a throwaway release: remove it, confirm the doctor reports all five views clean, confirm the missing set is back to baseline, then restore it from trash and confirm the doctor reports it consistent again.
-- [ ] 4.4 Update `library-organizer/README.md` and the root `AGENTS.md`/`CLAUDE.md` note that the live Navidrome runs natively in LXC 111 from the `homeserver` repository, so `navidrome-orchestra/` is not the deployed stack; verify no document still presents the Docker config as live.
+- [x] 4.1 Run the doctor and a removal dry run against the live stack from the PVE host with `MUSICBUCKET=/mnt/usb-hdd-wd-5tb/musicbucket`, and record the two reports in the change (they are the acceptance evidence for the retired risk).
+- [x] 4.2 Deploy: `git pull` in `/opt/alpargatify` on LXC 101 and place the host checkout at `/opt/alpargatify`; verify `python3 -m py_compile`, `bash -n` on every touched script, and that `remove-album.sh --help` and `audit-library.py --help` run from the host with no missing dependency.
+- [x] 4.3 End-to-end on a throwaway release: remove it, confirm the doctor reports all five views clean, confirm the missing set is back to baseline, then restore it from trash and confirm the doctor reports it consistent again.
+- [x] 4.4 Update `library-organizer/README.md` and the root `AGENTS.md`/`CLAUDE.md` note that the live Navidrome runs natively in LXC 111 from the `homeserver` repository, so `navidrome-orchestra/` is not the deployed stack; verify no document still presents the Docker config as live.
