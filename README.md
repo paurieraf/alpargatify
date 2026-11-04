@@ -25,6 +25,8 @@ This is a small collection of tools and orchestrations to run a personal music s
 
 > [!IMPORTANT]
 > **The live Navidrome instance is not deployed from this repository's `navidrome-orchestra/` folder.** It runs natively inside LXC 111 of the Proxmox host, and its configuration, mount guard and runbooks live in the `homeserver` repository (`lxcs/111-navidrome/`, `docs/navidrome.md`). Treat `navidrome-orchestra/` as a reference Docker Compose stack. The only part of this repository that talks to the live server is `library-organizer/server/`, which runs on the Proxmox host and reaches the containers through `pct`.
+>
+> `telegram-bot/` is likewise not deployed anywhere at the time of writing: no container runs it on any of the host's Docker guests, and its `secrets/` are empty stubs. The last live instance was part of the retired stack, archived in `homeserver` under `lxcs/111-navidrome/alpargatify.old/`.
 
 ## Server bootstrap helper
 To help deploy this on a fresh Ubuntu host, I include a small bash script that automates common server setup tasks (user creation, Docker install, SSH hardening, firewall, fail2ban) and helps copy the `navidrome-orchestra` files to the server. You can use it as a starting point to provision a machine ready to run `navidrome-orchestra`.
