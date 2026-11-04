@@ -7,8 +7,12 @@ This small, focused pipeline converts lossless music files and imports them into
 
 **Important:** the bundled conversion script defaults to **Opus** at 256kbps. It also supports **AAC** via macOS's `afconvert` tool. For Opus conversion, you need **opus-tools** or **ffmpeg** installed.
 
+**Where the live library lives:** Navidrome is *not* the Docker stack in `../navidrome-orchestra/`; it runs natively inside LXC 111 of the Proxmox host, and its configuration and runbooks are in the `homeserver` repository (`lxcs/111-navidrome/`, `docs/navidrome.md`). The scripts in `server/` are written for that layout: they run on the Proxmox host and reach the containers through `pct`.
+
 ## What this folder includes
 - `sync-lossless.sh`: the day-to-day entry point — imports an inbox of new FLAC into the lossless library, converts it to Opus, pushes both to the homeserver's SMB share and updates each library's beets DB. **See [`docs/sync-lossless.md`](docs/sync-lossless.md)** for usage, parameters and internals.
+- `audit-library.py`: read-only health check of the FLAC and Opus trees and their beets DBs, plus — with `--release` or `--missing` — a five-view reconciliation against a Navidrome database snapshot. This is the *doctor*. **See [`docs/audit.md`](docs/audit.md)**.
+- `server/`: entry points that run on the PVE host and reach the containers through `pct`: `audit.sh` (audit inside LXC 101), `navidrome-snapshot.sh` (verified `navidrome backup create` + `pct pull` into `<musicbucket>/.ops/`) and `remove-album.sh` (guarded album deletion). **See [`docs/remove-album.md`](docs/remove-album.md)**.
 - `flac-to-lossy.sh`: converter script (default: `.flac` -> `.opus` using **opusenc** or **ffmpeg**).
 - `wrapper.sh`: orchestrator that runs the converter into a temporary directory and then invokes a one-shot **Docker Compose** service which runs **beets** to import the converted files.
 - `parallel-wrapper.sh`: script to execute `wrapper.sh` in parallel for each immediate subdirectory of a given directory, allowing batch processing of multiple albums or collections.
@@ -89,6 +93,9 @@ Environment variables used by the converter and wrapper (common ones):
 - `wrapper.sh` — the main orchestrator. Read this first to understand the pipeline and to adapt compose detection or mount points.
 - `parallel-wrapper.sh` — the parallel execution script. Use this for batch processing multiple directories.
 - `flac-to-lossy.sh` — the conversion worker (edit `ENCODE_OPTS` or change defaults if needed).
+- `audit-library.py` — the doctor: findings, five-view release reconciliation, missing inventory. See `docs/audit.md`.
+- `server/remove-album.sh` — the deletion procedure: preflight, verified snapshot, beets rows by album id, trash, guarded purge, verification. See `docs/remove-album.md`.
+- `beets/rm_album.py` — the helper the removal runs inside the beets image (it is what touches the beets DBs by album id).
 - `beets/` — container config: `beets/beets-config.yaml`, `beets/entrypoint.sh`, `beets/Dockerfile`, `beets/docker-compose.yml` (used by the wrapper).
 
 ## License
