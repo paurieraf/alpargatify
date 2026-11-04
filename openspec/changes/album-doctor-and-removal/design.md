@@ -54,9 +54,13 @@ On disk a release is `Artist/Album` (and its `Disc NN` subfolders); in a beets d
 
 `pct exec 111 -- navidrome backup create -d /var/lib/navidrome/backup` then `pct pull` into `<musicbucket>/.ops/navidrome-<timestamp>.db`; the doctor opens it with a read-only URI and maps the snapshot's library root onto a local directory (`--library-map`). Alternatives rejected: opening the live DB (WAL, no `sqlite3` in the CT, and it would need write access), and driving the Subsonic/native API for a full sweep (thousands of calls, and it reports the *current* scan state, not the contents of the store). The snapshot doubles as the rollback artifact for removal, so one mechanism serves both purposes.
 
+Measured while implementing: in this 0.64.2 snapshot `media_file.path` is **relative to `library.path`** (`select count(*) from media_file where path like '/%'` returns 0), contrary to what the 0.61.2 schema suggested. The reader therefore accepts both shapes and resolves each row to a local path either way.
+
+`--navidrome-db` is optional for the doctor as a whole but **mandatory for removal**: without it the `navidrome` view reports `available: false` and a ghost album would be invisible, so `remove-album.sh` refuses to continue unless the JSON carries a present `views.navidrome`.
+
 ### D5 — The purge gate reads the live missing inventory, not the snapshot
 
-The gate needs the state *now*, so it runs `pct exec 111 -- navidrome missing list -c /etc/navidrome/navidrome.toml -f json` before and after the rescan. Tolerating the tool's banner on stdout is part of the contract: the parser anchors on the first `[` and ignores everything before it.
+The gate needs the state *now*, so it runs `pct exec 111 -- navidrome missing list -c /etc/navidrome/navidrome.toml -f json` before and after the rescan. Tolerating the tool's banner is part of the contract: the parser anchors on the first `[` and ignores everything before it. Measured: in this install the banner goes to stderr, so stdout is already clean; the tolerance stays because the CLI may change where it prints, and it is exercised by a fixture with a banner-prefixed file.
 
 ### D6 — Beets rows are removed through the beets API, by album id, in the existing image
 
