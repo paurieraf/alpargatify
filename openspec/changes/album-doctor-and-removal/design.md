@@ -138,6 +138,8 @@ End-to-end with a throwaway release (`Fela Kuti & Africa 70 - [2013] Confusion`,
 
 Note for the LXC 101 deployment: its checkout is on `feat/server-side-sync` (pulled to `f257042`), which does not contain `beets/rm_album.py`, so the run used `--beets-tools-dir /opt/beets-tools` (the file pushed with `pct push --perms 644`) instead of the default `/opt/alpargatify/library-organizer/beets`. Once `paurieraf/eliminar-track` reaches that branch, the default path works without the flag and the tools copy can be deleted.
 
+First real deletion (2026-11-04 09:25, the change's own example release `William Basinski - [2026] Passing the Cup of Sorrows`, the one whose Opus mirror broke): `baseline_missing=0`, `gate_allowed=3`, `gate_baseline=pass`, `rows_lossless_items=10`, `rows_lossy_items=10` (including the 8 `/import/…` orphan rows), `trash_moved=2`, `gate_after=pass`, `purge_ran=scan` with `Scanner: Purged missing items from the database mediaFiles=3`, `verify=clean`, `result=removed`, exit 0. After: both trees gone, 0 beets items in both albums, `navidrome missing list` empty, the doctor reports the release in none of the views, `album` 4337 → 4336 and `media_file` 46663 → 46660. The 317 MB moved to `.trash/20261104T082523Z-william-basinski-…/{lossless,lossy}/William Basinski/…` is deliberately kept; the failed import copy stayed in `navidrome_inbox_failed/William Basinski - Passing the Cup of Sorrows - 2026/` as the last source of those files.
+
 ## Open Questions
 
 - ~~Whether the PVE host should keep a full checkout of the repository or only the three scripts~~ — answered by the deployment: a full checkout at `/opt/alpargatify`, cloned over SSH from GitHub, so `git pull` updates the entry points and the audit script together.
