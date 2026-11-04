@@ -4,8 +4,8 @@ Parallelisation note: group 1 lands first (both other groups consume it). After 
 
 ## 1. Shared foundations
 
-- [ ] 1.1 Extend `library-organizer/server/common.sh` with `CT_MUSICBUCKET` (default `/mnt/musicbucket`), `OPS_DIR` (`$MUSICBUCKET/.ops`), `TRASH_DIR` (`$MUSICBUCKET/.trash`), `NAVIDROME_CT=111`, `BEETS_CT=101` and a `ct_path()` helper that maps a host path to the LXC 101 view; verify with `bash -n server/common.sh`, `shellcheck`, and a shell that sources it and prints every variable for both `MUSICBUCKET` values.
-- [ ] 1.2 Add a `require_ct_path()` guard that fails when the translated path does not exist inside the CT before any `docker run`; verify by sourcing the file and running it against a known-good path (`/mnt/musicbucket/navidrome_library`) and a bogus one, checking the exit codes.
+- [x] 1.1 Extend `library-organizer/server/common.sh` with `CT_MUSICBUCKET` (default `/mnt/musicbucket`), `OPS_DIR` (`$MUSICBUCKET/.ops`), `TRASH_DIR` (`$MUSICBUCKET/.trash`), `NAVIDROME_CT=111`, `BEETS_CT=101` and a `ct_path()` helper that maps a host path to the LXC 101 view; verify with `bash -n server/common.sh`, `shellcheck`, and a shell that sources it and prints every variable for both `MUSICBUCKET` values.
+- [x] 1.2 Add a `require_ct_path()` guard that fails when the translated path does not exist inside the CT before any `docker run`; verify by sourcing the file and running it against a known-good path (`/mnt/musicbucket/navidrome_library`) and a bogus one, checking the exit codes.
 
 ## 2. Doctor — five-view reconciliation (`library-doctor`)
 
