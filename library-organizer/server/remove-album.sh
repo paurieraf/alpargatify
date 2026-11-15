@@ -246,7 +246,7 @@ for row in con.execute(sys.argv[2], sys.argv[3:]):
 nd_query() {  # nd_query <sql> [params...]
     local sql="$1"
     shift
-    pct exec "$NAVIDROME_CT" -- python3 -c "$ND_QUERY_PY" "$ND_DB_CT" "$sql" "$@"
+    navidrome_exec python3 -c "$ND_QUERY_PY" "$ND_DB_CT" "$sql" "$@"
 }
 
 nd_release_rows() {  # nd_release_rows <release>
@@ -288,12 +288,12 @@ PY
 }
 
 config_value() {  # config_value <key> — from the persistent Navidrome config
-    pct exec "$NAVIDROME_CT" -- sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$NAVIDROME_CONFIG" \
+    navidrome_exec sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$NAVIDROME_CONFIG" \
         | tr -d '"' | tail -n 1
 }
 
 navidrome_targeted_scan() {  # <always|never> <release>
-    pct exec "$NAVIDROME_CT" -- env "ND_SCANNER_PURGEMISSING=$1" \
+    navidrome_exec env "ND_SCANNER_PURGEMISSING=$1" \
         /usr/bin/navidrome -c "$NAVIDROME_CONFIG" scan -t "$NAVIDROME_LIBRARY_ID:$2"
 }
 
@@ -443,11 +443,11 @@ beets_rm() {  # beets_rm <host tree root> <args...>
     shift
     local ct_tree
     ct_tree="$(ct_path "$tree")" || die 4 "Cannot translate '$tree' to the LXC $BEETS_CT view"
-    pct exec "$BEETS_CT" -- test -f "$ct_tree/library.db" \
-        || die 3 "No beets database at '$ct_tree/library.db' inside LXC $BEETS_CT"
-    pct exec "$BEETS_CT" -- test -f "$BEETS_TOOLS_CT/rm_album.py" \
-        || die 4 "rm_album.py is not deployed to '$BEETS_TOOLS_CT' in LXC $BEETS_CT (git pull there first)"
-    pct exec "$BEETS_CT" -- docker run --rm --user 0:0 \
+    beets_exec test -f "$ct_tree/library.db" \
+        || die 3 "No beets database at '$ct_tree/library.db'"
+    beets_exec test -f "$BEETS_TOOLS_CT/rm_album.py" \
+        || die 4 "rm_album.py is not deployed to '$BEETS_TOOLS_CT' (git pull there first)"
+    beets_exec docker run --rm --user 0:0 \
         -v "$ct_tree:/data" -v "$BEETS_TOOLS_CT:/alpargatify/beets:ro" \
         --entrypoint python3 "$BEETS_IMAGE" /alpargatify/beets/rm_album.py --library /data "$@"
 }
@@ -461,7 +461,7 @@ beets_check() {  # beets_check <tree> <release> <capture file> — read-only
 beets_backup_db() {  # beets_backup_db <tree>: library.db -> library.db.prev
     local ct_tree
     ct_tree="$(ct_path "$1")" || return 1
-    pct exec "$BEETS_CT" -- sh -c \
+    beets_exec sh -c \
         "cp -p '$ct_tree/library.db' '$ct_tree/library.db.prev.tmp' && mv -f '$ct_tree/library.db.prev.tmp' '$ct_tree/library.db.prev'"
 }
 
@@ -480,18 +480,22 @@ stage_preflight() {
     kv dry_run "$DRY_RUN"
     kv purge "$PURGE_MODE"
 
-    # MUSICBUCKET defaults to the *container* view (/mnt/musicbucket) in
-    # common.sh; on the PVE host the volume is /mnt/usb-hdd-wd-5tb/musicbucket.
-    if [ "$MUSICBUCKET" = "$CT_MUSICBUCKET" ] && [ ! -d "$MUSICBUCKET" ]; then
-        die 4 "MUSICBUCKET is still the container view ('$MUSICBUCKET'), which does not exist on this host; export MUSICBUCKET=/mnt/usb-hdd-wd-5tb/musicbucket first"
+    # MUSICBUCKET defaults to the container view (/mnt/musicbucket) in common.sh
+    if [ "$IS_PVE_HOST" -eq 1 ]; then
+        if [ "$MUSICBUCKET" = "$CT_MUSICBUCKET" ] && [ ! -d "$MUSICBUCKET" ]; then
+            die 4 "MUSICBUCKET is still the container view ('$MUSICBUCKET'), which does not exist on this host; export MUSICBUCKET=/mnt/usb-hdd-wd-5tb/musicbucket first"
+        fi
+        command -v pct >/dev/null 2>&1 || die 4 "pct not found: run this on the PVE host"
+    else
+        [ -f "$NAVIDROME_SSH_KEY" ] || die 4 "SSH key '$NAVIDROME_SSH_KEY' not found (run setup first)"
+        navidrome_exec true 2>/dev/null || die 4 "Cannot connect to Navidrome at $NAVIDROME_HOST via SSH"
     fi
     local hint=""
     if [ ! -d "$MUSICBUCKET" ]; then
-        hint=" (MUSICBUCKET must be the host view of the volume; on the PVE host: export MUSICBUCKET=/mnt/usb-hdd-wd-5tb/musicbucket)"
+        hint=" (MUSICBUCKET must be the accessible view of the volume)"
     fi
     [ -d "$LOSSLESS_ROOT" ] || die 4 "Lossless library root '$LOSSLESS_ROOT' does not exist$hint"
     [ -d "$LOSSY_ROOT" ] || die 4 "Lossy library root '$LOSSY_ROOT' does not exist$hint"
-    command -v pct >/dev/null 2>&1 || die 4 "pct not found: run this on the PVE host"
 
     # Invariants of the live stack: no scan may purge on its own, and a restart
     # must not run the scan we gate by hand.

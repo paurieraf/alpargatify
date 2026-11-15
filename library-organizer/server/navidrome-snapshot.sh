@@ -1,27 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================================
-# server/navidrome-snapshot.sh — verified snapshot of the Navidrome database
+# server/navidrome-snapshot.sh — verified snapshot of Navidrome database
 # ============================================================================
-# Runs on the PVE host. Snapshots the SQLite database of the native Navidrome in
-# LXC 111, pulls it onto the 5TB volume, verifies it, and keeps the last two.
-# Every destructive step of remove-album.sh needs one of these first (design
-# D10), and one is what you restore from when a removal has to be undone.
+# Runs on LXC 101 (or on the PVE host).
+# Takes a verified snapshot of the live Navidrome database and stores it in
+# $OPS_DIR (/mnt/musicbucket/.ops).
 #
 # Usage:
 #   navidrome-snapshot.sh [-h|--help] [--keep N] [--no-prune] [--no-ct-copy]
-#
-# Exit status: 0 snapshot created and verified, 1 could not create or verify it.
-#
-# Output (grep-able, one key=value per line):
-#   snapshot=/mnt/.../.ops/navidrome-20261104T020000Z.db
-#   media_file=<rows> albums=<rows> libraries=<rows>
-#   ct_backup=<path inside LXC 111>
-#   result=ok
-#
-# Navidrome's own copy is kept inside the container too (two of them, pruned with
-# `navidrome backup prune`) because `navidrome backup restore` reads from the
-# container's backup directory; the file in .ops is the one that survives a
-# container rebuild. Snapshots are ~850 MB each.
 # ============================================================================
 
 set -euo pipefail
@@ -38,19 +24,13 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Take a verified snapshot of the Navidrome database (LXC $NAVIDROME_CT) and keep
-the last two in $OPS_DIR.
+Take a verified snapshot of the Navidrome database and keep the last two in $OPS_DIR.
 
 Options:
   --keep N        number of snapshots to keep (default 2)
   --no-prune      create and verify only; delete nothing
   --no-ct-copy    delete the container-side backup after a verified pull
-                  (saves ~850 MB on the container disk; then
-                  \`navidrome backup restore\` needs a \`pct push\` first)
   -h, --help      this help
-
-Environment (from common.sh): MUSICBUCKET, CT_MUSICBUCKET, OPS_DIR,
-NAVIDROME_CT, NAVIDROME_CONFIG.
 EOF
 }
 
@@ -72,16 +52,16 @@ case "$KEEP" in
 esac
 [ "$KEEP" -ge 1 ] || err "--keep must be at least 1"
 
-command -v pct >/dev/null 2>&1 || err "pct not found: run this on the PVE host"
-command -v sqlite3 >/dev/null 2>&1 || err "sqlite3 not found on the host (needed to verify the snapshot)"
-
-pct status "$NAVIDROME_CT" >/dev/null 2>&1 || err "LXC $NAVIDROME_CT not found"
-[ "$(pct status "$NAVIDROME_CT")" = "status: running" ] \
-    || err "LXC $NAVIDROME_CT is not running; start it before snapshotting (a backup needs the live database)"
+if [ "$IS_PVE_HOST" -eq 1 ]; then
+    pct status "$NAVIDROME_CT" >/dev/null 2>&1 || err "LXC $NAVIDROME_CT not found"
+    [ "$(pct status "$NAVIDROME_CT")" = "status: running" ] \
+        || err "LXC $NAVIDROME_CT is not running; start it before snapshotting"
+else
+    [ -f "$NAVIDROME_SSH_KEY" ] || err "SSH key '$NAVIDROME_SSH_KEY' not found (run setup first)"
+    navidrome_exec true 2>/dev/null || err "Cannot connect to Navidrome at $NAVIDROME_HOST via SSH"
+fi
 
 mkdir -p "$OPS_DIR"
-# Keep the working area owned by whoever owns the libraries, so Samba and the
-# containers can read it (see OWNER in common.sh).
 share_owner="$(stat -c '%u:%g' "$MUSICBUCKET" 2>/dev/null \
     || stat -f '%u:%g' "$MUSICBUCKET" 2>/dev/null || echo "$OWNER")"
 chown "$share_owner" "$OPS_DIR" 2>/dev/null || warn "Could not chown $OPS_DIR to $share_owner"
@@ -91,10 +71,10 @@ dest="$OPS_DIR/navidrome-$stamp.db"
 [ -e "$dest" ] && err "Snapshot '$dest' already exists"
 
 # ---------------------------------------------------------------------------
-# 1. Create the backup inside the container
+# 1. Create the backup inside Navidrome
 # ---------------------------------------------------------------------------
 info "Creating Navidrome database backup in LXC $NAVIDROME_CT ($CT_BACKUP_DIR)"
-pct exec "$NAVIDROME_CT" -- mkdir -p "$CT_BACKUP_DIR"
+navidrome_exec mkdir -p "$CT_BACKUP_DIR"
 
 out="$OPS_DIR/.create-$stamp.log"
 set +e
@@ -108,40 +88,57 @@ if [ "$rc" -ne 0 ]; then
     err "No snapshot taken"
 fi
 
-# logrus prints the value quoted: path="/var/lib/navidrome/backup/x.db"
 ct_file="$(sed -n 's/.*[[:space:]]path="\{0,1\}\([^"[:space:]]*\)"\{0,1\}.*/\1/p' "$out" | tail -n 1)"
 rm -f "$out"
-if [ -z "$ct_file" ] || ! pct exec "$NAVIDROME_CT" -- test -s "$ct_file"; then
-    # Older/newer CLI output may not name the file: fall back to the newest one.
-    ct_file="$(pct exec "$NAVIDROME_CT" -- sh -c "ls -1t '$CT_BACKUP_DIR'/*.db 2>/dev/null | head -n 1")"
+if [ -z "$ct_file" ] || ! navidrome_exec test -s "$ct_file"; then
+    ct_file="$(navidrome_exec sh -c "ls -1t '$CT_BACKUP_DIR'/*.db 2>/dev/null | head -n 1")"
 fi
 [ -n "$ct_file" ] || err "Could not find the backup file inside LXC $NAVIDROME_CT"
-pct exec "$NAVIDROME_CT" -- test -s "$ct_file" || err "Backup file '$ct_file' is empty or missing"
+navidrome_exec test -s "$ct_file" || err "Backup file '$ct_file' is empty or missing"
 info "Container backup: $ct_file"
 
 # ---------------------------------------------------------------------------
 # 2. Pull it onto the volume and verify it
 # ---------------------------------------------------------------------------
 info "Pulling to $dest"
-pct pull "$NAVIDROME_CT" "$ct_file" "$dest.tmp"
+navidrome_pull "$ct_file" "$dest.tmp"
 
-# The pulled file keeps Navidrome's write-ahead-log mode, which makes it depend
-# on the -wal sidecar that a plain copy leaves behind. Fold the journal into the
-# file so the snapshot is one self-contained file `backup restore` can read.
+# Helper for sqlite commands
+run_sqlite() {
+    local db="$1" query="$2"
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$db" "$query"
+    else
+        python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+c = conn.cursor()
+for r in c.execute(sys.argv[2]):
+    print(' '.join(str(x) for x in r))
+" "$db" "$query"
+    fi
+}
+
+# Fold WAL mode into rollback journal
 set +e
-sqlite3 "$dest.tmp" 'PRAGMA journal_mode=DELETE;' >/dev/null
-jr=$?
+run_sqlite "$dest.tmp" 'PRAGMA journal_mode=DELETE;' >/dev/null 2>&1
 set -e
-if [ "$jr" -ne 0 ]; then
-    warn "Could not fold the write-ahead log into '$dest.tmp' (sqlite3 status $jr)"
-fi
 rm -f "$dest.tmp-shm" "$dest.tmp-wal"
 
-verify() {  # verify <file>; prints "quick_check media_file albums libraries"
+verify() {
     local db="$1"
-    # Read-only URI: verification must never modify the snapshot.
-    sqlite3 -readonly -separator ' ' "$db" \
-        'select (select * from pragma_quick_check), (select count(*) from media_file), (select count(*) from album), (select count(*) from library);'
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 -readonly -separator ' ' "$db" \
+            'select (select * from pragma_quick_check), (select count(*) from media_file), (select count(*) from album), (select count(*) from library);'
+    else
+        python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
+c = conn.cursor()
+q = c.execute('select (select * from pragma_quick_check), (select count(*) from media_file), (select count(*) from album), (select count(*) from library)').fetchone()
+print(' '.join(str(x) for x in q))
+" "$db"
+    fi
 }
 
 set +e
@@ -149,7 +146,7 @@ verified="$(verify "$dest.tmp")"
 vr=$?
 set -e
 if [ "$vr" -ne 0 ] || [ -z "$verified" ]; then
-    warn "Snapshot '$dest.tmp' failed verification (sqlite3 status $vr) — keeping the file for inspection"
+    warn "Snapshot '$dest.tmp' failed verification — keeping the file for inspection"
     err "Snapshot not usable; remove it or investigate before relying on it"
 fi
 read -r qcheck files albums libraries <<<"$verified"
@@ -177,8 +174,6 @@ if [ "$DO_PRUNE" -eq 1 ]; then
     [ "$pr" -eq 0 ] || warn "navidrome backup prune exited with status $pr; check $CT_BACKUP_DIR"
 
     info "Pruning $OPS_DIR to $KEEP snapshot(s)"
-    # Only our own naming pattern is touched, and never the file just created.
-    # The names carry a sortable UTC stamp, so reverse lexical order is newest-first.
     mapfile -t olds < <(
         find "$OPS_DIR" -maxdepth 1 -type f -name 'navidrome-*.db' -print 2>/dev/null \
             | sort -r | tail -n "+$((KEEP + 1))"
@@ -194,7 +189,7 @@ fi
 
 if [ "$CT_COPY" -eq 0 ]; then
     info "Removing the container-side copy ($ct_file)"
-    pct exec "$NAVIDROME_CT" -- rm -f "$ct_file"
+    navidrome_exec rm -f "$ct_file"
 fi
 
 echo "snapshot=$dest"

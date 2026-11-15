@@ -215,15 +215,9 @@ if [ "$LOSSY_ONLY" = true ]; then
     fi
 fi
 
-# Determine Max Jobs
+# Determine Max Jobs: default to 1 because Beets SQLite DB does not support concurrent writes
 if [ -z "$MAX_JOBS" ]; then
-    MAX_JOBS=4
-    # nproc first: Linux also ships sysctl, but without hw.ncpu.
-    if command -v nproc >/dev/null 2>&1; then
-        MAX_JOBS=$(nproc)
-    elif command -v sysctl >/dev/null 2>&1; then
-        MAX_JOBS=$(sysctl -n hw.ncpu)
-    fi
+    MAX_JOBS=1
 fi
 
 if [ "$INTERACTIVE" = true ]; then

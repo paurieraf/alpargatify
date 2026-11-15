@@ -8,6 +8,7 @@
 #                        the last LINES log lines (default 15).
 #   status.sh failed     Albums in navidrome_inbox_failed/ and why, newest first,
 #                        plus the lists of FLAC albums still missing their Opus copy.
+#                        Also accepts: -f, --failed.
 # Plain text, no colour codes, so it reads well in the iOS shortcut result.
 # ============================================================================
 
@@ -96,12 +97,16 @@ show_progress() {
     fi
 }
 
-if [ "${1:-}" = "failed" ]; then
+if [ "${1:-}" = "failed" ] || [ "${1:-}" = "-f" ] || [ "${1:-}" = "--failed" ]; then
     show_failed
     exit 0
 fi
 
-LINES_SHOWN="${1:-15}"
+LINES_SHOWN=15
+if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    LINES_SHOWN="$1"
+fi
+
 latest="$LOG_DIR/latest.log"
 
 if session_running "$SESSION_AUTO"; then

@@ -803,9 +803,11 @@ class ReleaseDoctor(object):
         parts = rels[0].split('/')
         artist = nfc(parts[-2] if len(parts) > 1 else '').casefold()
         name = YEAR_PREFIX.sub('', nfc(parts[-1])).casefold()
-        if not name or nfc(album['name'] or '').casefold() != name:
+        al_name = album.get('album') or album.get('name') or ''
+        if not name or nfc(al_name).casefold() != name:
             return False
-        return not artist or nfc(album['album_artist'] or '').casefold() == artist
+        al_artist = album.get('albumartist') or album.get('album_artist') or album.get('artist') or ''
+        return not artist or nfc(al_artist).casefold() == artist
 
     # -- steps -------------------------------------------------------------
 
