@@ -419,7 +419,7 @@ pushd "$SCRIPT_DIR/beets" >/dev/null
 # Create unique project name to allow parallel executions
 
 # Sanitize the folder name to be docker-compose friendly (lowercase, alphanumeric, underscores)
-SANITIZED_NAME=$(basename "$SRC" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' | sed 's/__*/_/g' | sed 's/^_//;s/_$//')
+SANITIZED_NAME=$(basename "$SRC" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9]/_/g' | sed 's/__*/_/g' | sed 's/^_//;s/_$//')
 
 # If the sanitized name is empty (e.g. only special chars) or too short, use a hash of the full path
 if [ -z "$SANITIZED_NAME" ] || [ ${#SANITIZED_NAME} -lt 3 ]; then
