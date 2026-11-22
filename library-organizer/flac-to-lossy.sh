@@ -38,6 +38,7 @@ METAFLAC_PRESENT="no" # Flag indicating if metaflac is available
 # Default settings
 FORMAT="opus"         # Default format: opus
 BITRATE="256"         # Default bitrate: 256kbps
+JOBS="${CONVERT_JOBS:-}"  # Max parallel track conversions (auto-detected if empty)
 
 # Default encoding parameters
 DEFAULT_OPUS_ARGS=( --bitrate "${BITRATE}" --vbr --music )
@@ -45,6 +46,35 @@ DEFAULT_OPUS_ARGS=( --bitrate "${BITRATE}" --vbr --music )
 DEFAULT_AAC_ARGS=( -f m4af -d "aac" -b 256000 -q 127 -s 2 )
 
 declare -a ENCODE_ARGS  # Array to hold encoding arguments
+declare -a RUNNING_PIDS=()  # Active background worker PIDs
+
+detect_cpu_cores() {
+  local cores=""
+  if command -v nproc >/dev/null 2>&1; then
+    cores="$(nproc 2>/dev/null || true)"
+  elif command -v sysctl >/dev/null 2>&1; then
+    cores="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  if [[ "$cores" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$cores"
+  else
+    echo "4"
+  fi
+}
+
+# shellcheck disable=SC2329  # called through trap
+cleanup_workers() {
+  if [ "${#RUNNING_PIDS[@]}" -gt 0 ]; then
+    local pid
+    for pid in "${RUNNING_PIDS[@]}"; do
+      kill "$pid" 2>/dev/null || true
+    done
+    for pid in "${RUNNING_PIDS[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+    RUNNING_PIDS=()
+  fi
+}
 
 ###############################################################################
 # Initialization functions
@@ -113,6 +143,7 @@ Flags:
   -h, --help      show this help and exit
   --format FMT    output format: opus (default) or aac
   --bitrate N     bitrate in kbps (default: ${BITRATE})
+  -j, --jobs N    max parallel track conversions (default: detected CPU cores)
   --force         overwrite existing destination files (equivalent to SKIP_EXISTING=no)
   --dry-run       show actions without running conversion (equivalent to DRY_RUN=yes)
   -v, --verbose   enable verbose debug output (equivalent to VERBOSE=yes)
@@ -126,6 +157,7 @@ Environment:
   ENCODE_OPTS     optional extra encoding options (whitespace-separated tokens)
                   Example: ENCODE_OPTS='--vbr --framesize 20' ./flac-to-lossy.sh src dest
                   (ignored when --split-only is used)
+  CONVERT_JOBS    max parallel track conversions (overridden by -j/--jobs; default: auto)
   SKIP_EXISTING   ${SKIP_EXISTING}
   VERBOSE         ${VERBOSE}
   DRY_RUN         ${DRY_RUN}
@@ -154,6 +186,15 @@ parse_arguments() {
       -h|--help) usage; exit 0 ;;
       --format) FORMAT="$2"; shift 2 ;;
       --bitrate) BITRATE="$2"; shift 2 ;;
+      -j|--jobs)
+        if [ "$#" -lt 2 ]; then
+          err "Option $1 requires a positive integer argument."
+          usage
+          exit 2
+        fi
+        JOBS="$2"
+        shift 2
+        ;;
       --force) FORCE_FROM_CLI="yes"; shift ;;
       --dry-run) DRY_RUN="yes"; shift ;;
       -v|--verbose) VERBOSE="yes"; shift ;;
@@ -169,6 +210,15 @@ parse_arguments() {
       *) POSITIONAL+=("$1"); shift ;;
     esac
   done
+
+  if [ -z "$JOBS" ]; then
+    JOBS="$(detect_cpu_cores)"
+  fi
+  if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    err "Invalid jobs value: $JOBS (must be a positive integer)."
+    usage
+    exit 2
+  fi
 
   set -- "${POSITIONAL[@]:-}"
 
@@ -302,6 +352,7 @@ print_settings() {
   info "  Destination:   $DEST"
   info "  Format:        $FORMAT"
   info "  Bitrate:       $BITRATE kbps"
+  info "  Jobs:          $JOBS"
   info "  Mode:          $([ "$SPLIT_ONLY" = "yes" ] && echo "SPLIT ONLY (FLAC)" || echo "Convert to $FORMAT")"
   info "  Copy Covers:   $COPY_COVERS"
   info "  Strip RG:      $STRIP_REPLAYGAIN"
@@ -409,8 +460,8 @@ apply_metadata_to_m4a() {
 # ReplayGain stripping
 ###############################################################################
 
-# Strip ReplayGain tags from a FLAC file by creating a temporary copy
-# Returns the path to the cleaned temp file, or the original file if stripping is disabled/failed
+# Strip ReplayGain tags from a FLAC file by creating an isolated temporary copy
+# Returns the path to the cleaned temp file (inside a dedicated temp dir), or the original file if stripping is disabled/failed
 strip_replaygain_to_temp() {
   local in_file="$1"
   
@@ -419,20 +470,22 @@ strip_replaygain_to_temp() {
     return 0
   fi
 
-  # Create temp file
-  local tmp_file
-  tmp_file="$(mktemp -t flac_norga_XXXXXX.flac 2>/dev/null || mktemp /tmp/flac_norga_XXXXXX.flac 2>/dev/null || true)"
+  # Create isolated temp directory (avoids macOS/Linux mktemp suffix portability issues)
+  local tmp_dir
+  tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t flac_norga_XXXXXX 2>/dev/null || true)"
   
-  if [ -z "$tmp_file" ]; then
-    warn "Could not create temp file for ReplayGain stripping, using original"
+  if [ -z "$tmp_dir" ]; then
+    warn "Could not create temp directory for ReplayGain stripping, using original"
     echo "$in_file"
     return 0
   fi
 
+  local tmp_file="$tmp_dir/track.flac"
+
   # Copy the file
   cp "$in_file" "$tmp_file" 2>/dev/null || {
     warn "Could not copy file for ReplayGain stripping, using original"
-    rm -f "$tmp_file" 2>/dev/null || true
+    rm -rf "$tmp_dir" 2>/dev/null || true
     echo "$in_file"
     return 0
   }
@@ -444,7 +497,7 @@ strip_replaygain_to_temp() {
     return 0
   else
     debug "No ReplayGain tags found or stripping failed, using original"
-    rm -f "$tmp_file" 2>/dev/null || true
+    rm -rf "$tmp_dir" 2>/dev/null || true
     echo "$in_file"
     return 0
   fi
@@ -505,16 +558,16 @@ convert_to_lossy() {
     if [ "$FORMAT" = "aac" ]; then
       apply_metadata_to_m4a "$in_file" "$out_file"
     fi
-    info "  -> OK"
+    info "  -> OK: ${out_file#"$DEST"/}"
   else
-    err "  -> ERROR converting $in_file"
+    err "  -> ERROR converting ${in_file#"$SRC"/}"
     [ -e "$out_file" ] && rm -f "$out_file"
     convert_result=1
   fi
 
-  # Cleanup temp file if we created one
-  if [ -n "$temp_stripped" ] && [ -f "$temp_stripped" ]; then
-    rm -f "$temp_stripped" 2>/dev/null || true
+  # Cleanup isolated temp directory if we created one
+  if [ -n "$temp_stripped" ]; then
+    rm -rf "$(dirname "$temp_stripped")" 2>/dev/null || true
   fi
 
   return $convert_result
@@ -640,33 +693,109 @@ process_flac_file() {
   local srcfile="$1"
   local relpath="${srcfile#"$SRC"/}"
   local dirpart; dirpart="$(dirname "$relpath")"
-  local base; base="$(basename "$relpath")"
-  local name="${base%.*}"
   local destdir="$DEST/$dirpart"
 
-  mkdir -p "$destdir" 2>/dev/null
+  mkdir -p "$destdir" 2>/dev/null || true
   
-  local cue_file; cue_file="$(find_cue_file "$srcfile")"
+  local cue_file; cue_file="$(find_cue_file "$srcfile" || true)"
   if [ -n "$cue_file" ]; then
     if split_with_xld "$srcfile" "$cue_file" "$destdir" "$relpath"; then return 0; fi
   fi
-
-  # Attempt to copy cover art (will handle duplication checks internally)
-  copy_cover_art "$(dirname "$srcfile")" "$destdir"
 
   if [ "$SPLIT_ONLY" = "yes" ]; then copy_flac_file "$srcfile" "$destdir"
   else convert_to_lossy "$srcfile" "$destdir"; fi
 }
 
+prepare_directories_and_covers() {
+  local -a seen_dirs=()
+  local srcfile relpath dirpart src_dir dest_dir seen already_seen
+
+  for srcfile in "$@"; do
+    relpath="${srcfile#"$SRC"/}"
+    dirpart="$(dirname "$relpath")"
+    already_seen="no"
+    for seen in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
+      if [ "$seen" = "$dirpart" ]; then
+        already_seen="yes"
+        break
+      fi
+    done
+    if [ "$already_seen" = "yes" ]; then
+      continue
+    fi
+    seen_dirs+=("$dirpart")
+
+    if [ "$dirpart" = "." ]; then
+      src_dir="$SRC"
+      dest_dir="$DEST"
+    else
+      src_dir="$SRC/$dirpart"
+      dest_dir="$DEST/$dirpart"
+    fi
+    mkdir -p "$dest_dir" 2>/dev/null || true
+    copy_cover_art "$src_dir" "$dest_dir"
+  done
+}
+
 process_all_files() {
-  local error_count=0
+  local -a flac_files=()
+  local srcfile
   while IFS= read -r -d '' srcfile; do
-    process_flac_file "$srcfile" || ((error_count++))
+    flac_files+=("$srcfile")
   done < <(find "$SRC" -type f -iname '*.flac' ! -name '._*' -print0)
-  return $error_count
+
+  if [ "${#flac_files[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  prepare_directories_and_covers "${flac_files[@]}"
+
+  local error_count=0
+  if [ "$JOBS" -eq 1 ] || [ "$DRY_RUN" = "yes" ]; then
+    for srcfile in "${flac_files[@]}"; do
+      process_flac_file "$srcfile" || error_count=$((error_count + 1))
+    done
+  else
+    local pid
+    local -a still_running=()
+    for srcfile in "${flac_files[@]}"; do
+      while [ "${#RUNNING_PIDS[@]}" -ge "$JOBS" ]; do
+        still_running=()
+        for pid in "${RUNNING_PIDS[@]}"; do
+          if kill -0 "$pid" 2>/dev/null; then
+            still_running+=("$pid")
+          else
+            if ! wait "$pid"; then
+              error_count=$((error_count + 1))
+            fi
+          fi
+        done
+        RUNNING_PIDS=("${still_running[@]+"${still_running[@]}"}")
+        if [ "${#RUNNING_PIDS[@]}" -ge "$JOBS" ]; then
+          sleep 0.1
+        fi
+      done
+
+      ( process_flac_file "$srcfile" ) &
+      RUNNING_PIDS+=("$!")
+    done
+
+    for pid in "${RUNNING_PIDS[@]}"; do
+      if ! wait "$pid"; then
+        error_count=$((error_count + 1))
+      fi
+    done
+    RUNNING_PIDS=()
+  fi
+
+  if [ "$error_count" -gt 0 ]; then
+    return 1
+  fi
+  return 0
 }
 
 main() {
+  trap 'cleanup_workers; exit 130' INT TERM
   init_colors
   parse_arguments "$@"
   check_system_requirements

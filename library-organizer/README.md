@@ -75,11 +75,13 @@ Examples:
 - Flags supported:
 	- `--format FMT`: choose `opus` (default) or `aac`.
 	- `--bitrate N`: bitrate in kbps (default: 256).
+	- `-j` / `--jobs N`: max parallel track conversions (default: detected CPU cores, fallback `4`).
 	- `--dry-run`: show the conversion commands without executing them.
 	- `--force`: overwrite existing destination files (equivalent to `SKIP_EXISTING=no`).
 	- `-h` / `--help`: show usage
 
 Environment variables used by the converter and wrapper (common ones):
+- `CONVERT_JOBS`: max parallel track conversions (overridden by `-j`/`--jobs`; defaults to detected CPU cores). Separate from album-level `MAX_JOBS` (which stays at `1` in `sync-lossless.sh`/`frigopeuify` to serialize beets SQLite writes).
 - `ENCODE_OPTS`: extra arguments to pass to the encoder.
 - `SKIP_EXISTING`: `yes` (default) to skip existing converted files, `no` to overwrite.
 - `DRY_RUN`: `yes` to enable dry-run behavior.

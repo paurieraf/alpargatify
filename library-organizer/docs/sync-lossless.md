@@ -74,6 +74,7 @@ The script can be launched from anywhere: it resolves `wrapper.sh`, `parallel-wr
 | `FIX_OWNER` | unset | `user:group` applied (with `a+rX`) to everything written to the destinations. The server sets `0:0`. |
 | `BEETS_UID` / `BEETS_GID` | `1000` | User the beets container runs as (`beets/docker-compose.yml`). The server sets `0`. |
 | `ALPARGATIFY_PRUNE` | `yes` | `no` skips `parallel-wrapper.sh`'s global `docker system prune`, which on a shared Docker host would hit other stacks. |
+| `CONVERT_JOBS` | auto (CPU cores) | Track-level parallel conversions inside `flac-to-lossy.sh` (overridden by `-j`/`--jobs`). Independent of album-level `-j`/`MAX_JOBS`, so `MAX_JOBS=1` keeps beets SQLite imports serialized while `opusenc` still uses multiple CPU cores per album. |
 
 ```bash
 # dry rehearsal against scratch destinations, real libraries untouched
